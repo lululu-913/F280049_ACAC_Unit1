@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Rename-Item -Path \"d:\\\\CCS\\\\workspace_v12\\\\F280049_ACAC_Unit1\\\\main.c\" -NewName \"converter1.c\")",
+      "Bash(git init *)",
+      "Bash(gh auth *)"
+    ]
+  }
+}
