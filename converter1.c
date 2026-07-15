@@ -140,19 +140,19 @@
 
 //********** 电压范围与保护阈值 (V) **********//
 #if POWER_PROFILE == PROFILE_HALF
-// 12 V RMS输入低功率测试
-#define UI_START_MIN                     10.5f
-#define UI_START_MAX                     13.5f
-#define UI_RUN_MIN                       10.0f
-#define UI_RUN_MAX                       14.0f
+// 36 V RMS 输入
+#define UI_START_MIN                     33.0f
+#define UI_START_MAX                     39.0f
+#define UI_RUN_MIN                       30.0f
+#define UI_RUN_MAX                       40.0f
 
-// 第一次测试先限制为低输出电压
-#define UO_SINGLE_MAX                    10.0f
-#define UO_PARALLEL_MAX                  8.0f
-#define UO_DEFAULT                       5.0f
-#define UO_RMS_HARD_MAX                  11.0f
-#define UO_ABS_PK_TRIP                   16.0f
-#define UOV_MARGIN                       1.0f
+// 30 V RMS 输出
+#define UO_SINGLE_MAX                    31.5f
+#define UO_PARALLEL_MAX                  31.5f
+#define UO_DEFAULT                       30.0f
+#define UO_RMS_HARD_MAX                  33.0f
+#define UO_ABS_PK_TRIP                   46.0f
+#define UOV_MARGIN                       2.0f
 #else
 // 输入电压启动/运行窗口
 #define UI_START_MIN                     33.0f
@@ -231,6 +231,7 @@
 #define VOLTAGE_KI                       5.0e-2f
 #define SHARE_KP                         0.25f
 #define SHARE_KI                         78.5f
+#define DIRECT_VOLTAGE_DUTY_TEST         1U
 
 #define KEY1_IN                         (GpioDataRegs.GPADAT.bit.GPIO27 == 0U)
 #define KEY2_IN                         (GpioDataRegs.GPADAT.bit.GPIO25 == 0U)
@@ -373,6 +374,7 @@ PiController pi_vd;
 PiController pi_vq;
 PiController pi_sd;
 PiController pi_sq;
+PiController pi_u_duty;
 DqLowPass it_dq;
 DqLowPass io_dq;
 
@@ -423,6 +425,7 @@ float iconv_ref_held = 0.0f;
 float iconv_ref_target = 0.0f;
 float dff_held = PWM_D_MIN;
 float dff_target = PWM_D_MIN;
+float direct_duty_target = PWM_D_MIN;
 float uo_amp_held = 0.0f;
 Uint16 k_limited = 0U;
 Uint16 bus_valid = 0U;
@@ -1601,6 +1604,12 @@ void controllers_init(void)
     pi_sd.kp = SHARE_KP; pi_sd.ki = SHARE_KI;
     pi_sd.out_min = -I_BRANCH_CMD_MAX; pi_sd.out_max = I_BRANCH_CMD_MAX;
     pi_sq = pi_sd;
+
+    pi_u_duty.kp = 0.010f;
+    pi_u_duty.ki = 0.30f;
+    pi_u_duty.integral = 0.0f;
+    pi_u_duty.out_min = -0.15f;
+    pi_u_duty.out_max =  0.15f;
 }
 
 //********** PWM 门极时序 **********//
@@ -2168,28 +2177,56 @@ void control_update_slow(void)
                     (run_state == ST_RUN) ||
                     (run_state == ST_STOP_RAMP))) ? 1U : 0U;
 
-    // 稳压角色：vd 外环调节有功电流，vq 外环压制无功分量，同时加入 Co 电流前馈。
+    // 稳压角色
     if (is_voltage_role() != 0U)
     {
-        float v_alpha = uo_observer.alpha;
-        float v_beta  = uo_observer.beta;
-        float vd = v_alpha * sn - v_beta * cs;
-        float vq = v_alpha * cs + v_beta * sn;
-        float id_corr;
-        float iq_corr;
-        float duo_ref;
-        float target_u;
+        float target_u = SQRT2_F * u_ref_active;
 
-        target_u = SQRT2_F * u_ref_active;
-        id_corr = pi_update_dt(&pi_vd, target_u - vd, ctrl_active, 0.001f);
-        iq_corr = pi_update_dt(&pi_vq, -vq, ctrl_active, 0.001f);
-        debug_uo_d = vd;
-        debug_uo_q = vq;
-        debug_vd_error = target_u - vd;
-        debug_vq_error = -vq;
-        duo_ref = -target_u * pll_ui.omega * cs;
-        iconv_ref = io_ff + CO_FARAD * duo_ref -
-                    (id_corr * sn + iq_corr * cs);
+#if DIRECT_VOLTAGE_DUTY_TEST
+
+        {
+            float voltage_error;
+            float duty_correction;
+
+            /*
+             * 直接电压控制：用 RMS 误差修正占空比。
+             * 输出低于参考时误差为正，增加占空比。
+             */
+            voltage_error = u_ref_active - meas.uo_rms;
+            duty_correction = pi_update_dt(&pi_u_duty,
+                                           voltage_error,
+                                           ctrl_active,
+                                           0.001f);
+            direct_duty_target = clampf_local(dff + duty_correction,
+                                              PWM_D_MIN, PWM_D_MAX);
+
+            /* 旁路电流指令 */
+            iconv_ref = 0.0f;
+        }
+
+#else
+
+        {
+            float v_alpha = uo_observer.alpha;
+            float v_beta  = uo_observer.beta;
+            float vd = v_alpha * sn - v_beta * cs;
+            float vq = v_alpha * cs + v_beta * sn;
+            float id_corr;
+            float iq_corr;
+            float duo_ref;
+
+            id_corr = pi_update_dt(&pi_vd, target_u - vd, ctrl_active, 0.001f);
+            iq_corr = pi_update_dt(&pi_vq, -vq, ctrl_active, 0.001f);
+            debug_uo_d = vd;
+            debug_uo_q = vq;
+            debug_vd_error = target_u - vd;
+            debug_vq_error = -vq;
+            duo_ref = -target_u * pll_ui.omega * cs;
+            iconv_ref = io_ff + CO_FARAD * duo_ref -
+                        (id_corr * sn + iq_corr * cs);
+        }
+
+#endif
     }
     // 分流角色：Unit1 测量总电流和本机电流，在 Uo PLL dq 坐标系下调节 Io。
     else if (is_share_role() != 0U)
@@ -2249,6 +2286,8 @@ void control_update_slow(void)
     {
         pi_reset(&pi_vd); pi_reset(&pi_vq);
         pi_reset(&pi_sd); pi_reset(&pi_sq);
+        pi_reset(&pi_u_duty);
+        direct_duty_target = PWM_D_MIN;
     }
 
     iconv_ref = clampf_local(iconv_ref, -SQRT2_F * I_BRANCH_CMD_MAX,
@@ -2298,10 +2337,27 @@ void control_update_fast(void)
     }
     il_ref_target = clampf_local(il_ref_target, -IL_REF_PK_MAX,
                                  IL_REF_PK_MAX);
+#if DIRECT_VOLTAGE_DUTY_TEST
+
+    /*
+     * 直接电压控制模式：
+     * 以有限斜率跟踪慢速外环给出的占空比。
+     * 0.0005f/次 @ 20 kHz -> 每毫秒约1个百分点。
+     */
+    duty = slew(duty, direct_duty_target, 0.0005f);
+    duty = clampf_local(duty, PWM_D_MIN, PWM_D_MAX);
+
+    /* 电流参考和电流PI退出控制 */
+    il_ref = 0.0f;
+    il_ref_prev = 0.0f;
+    il_ref_target = 0.0f;
+    pi_reset(&pi_id);
+
+#else
+
     il_ref = slew(il_ref_prev, il_ref_target, 0.125f);
     il_ref_dot = (il_ref - il_ref_prev) / CONTROL_TS;
     il_ref_prev = il_ref;
-    il_ref = il_ref;
 
     if (ctrl_active != 0U)
     {
@@ -2330,6 +2386,8 @@ void control_update_fast(void)
 #endif
         pi_reset(&pi_id);
     }
+
+#endif
 
     // ---- 半周换向：带进入/退出迟滞 + 预测补偿 + 过零电流收缩 ----
     // 进入零区不立即换向，明确离开零区时才切换。
@@ -2555,6 +2613,8 @@ void slow_state_machine_1ms(void)
             }
             pi_reset(&pi_id); pi_reset(&pi_vd); pi_reset(&pi_vq);
             pi_reset(&pi_sd); pi_reset(&pi_sq);
+            pi_reset(&pi_u_duty);
+            direct_duty_target = PWM_D_MIN;
 #if GATE_OPEN_LOOP_TEST
             run_state = ST_GATE_TEST;
 #else
@@ -2578,8 +2638,10 @@ void slow_state_machine_1ms(void)
                 {
                     pi_reset(&pi_vd);
                     pi_reset(&pi_vq);
+                    pi_reset(&pi_u_duty);
                     pi_vd.integral = 0.20f;
                     pi_vq.integral = 0.0f;
+                    direct_duty_target = PWM_D_MIN;
                     run_state = ST_VOLT_RAMP;
                     state_ms = 0UL;
                 }
@@ -2668,8 +2730,10 @@ void slow_state_machine_1ms(void)
             {
                 pi_reset(&pi_vd);
                 pi_reset(&pi_vq);
+                pi_reset(&pi_u_duty);
                 pi_vd.integral = 0.20f;
                 pi_vq.integral = 0.0f;
+                direct_duty_target = PWM_D_MIN;
                 run_state = ST_VOLT_RAMP;
                 state_ms = 0UL;
                 voltage_stable_ms = 0U;
