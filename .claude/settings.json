@@ -6,7 +6,8 @@
       "Bash(gh auth *)",
       "Bash(git remote *)",
       "Bash(grep -n \"^t//\" converter1.c)",
-      "Bash(git -C \"d:/CCS/workspace_v12/F280049_ACAC_Unit1\" log --oneline -5)"
+      "Bash(git -C \"d:/CCS/workspace_v12/F280049_ACAC_Unit1\" log --oneline -5)",
+      "Bash(git restore *)"
     ]
   }
 }

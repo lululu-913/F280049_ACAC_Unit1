@@ -213,8 +213,11 @@
 #endif
 
 //********** 过零迟滞换向 **********//
-#define ZC_ALPHA_HYST_V                 0.10f
+#define ZC_ENTER_V                      0.20f
+#define ZC_EXIT_V                       0.20f
 #define ZC_BLOCK_SAMPLES                160U
+#define ZC_ADVANCE_SEC                  75.0e-6f
+#define ZC_CURRENT_FADE_V               0.40f
 
 //********** PLL 和控制增益（调试初值）**********//
 #define PLL_KP                           88.9f
@@ -452,8 +455,14 @@ Uint16 trip_clear_safe_count = 0U;
 Uint16 open_loop_test_ms = 0U;
 float ui_alpha_prev = 0.0f;
 volatile Uint32 debug_half_change_count = 0UL;
-int16 zc_alpha_region = 0;
-Uint16 half_change_block_count = 0U;
+typedef enum
+{
+    ZC_REGION_POS = 1,
+    ZC_REGION_ZERO = 0,
+    ZC_REGION_NEG = -1
+} ZcRegion;
+volatile ZcRegion zc_region = ZC_REGION_ZERO;
+Uint16 zc_block_count = 0U;
 volatile Uint32 debug_rejected_zc_count = 0UL;
 volatile float debug_uo_d = 0.0f;
 volatile float debug_uo_q = 0.0f;
@@ -2322,54 +2331,70 @@ void control_update_fast(void)
         pi_reset(&pi_id);
     }
 
-    // ---- 半周换向：带迟滞的过零检测 ----
-    // 只有信号明确穿过±0.3V区域后，才认定完成一次换向。
-    // 最小换向间隔 8ms (160 采样 @20kHz)，防止噪声导致频繁误换向。
+    // ---- 半周换向：带进入/退出迟滞 + 预测补偿 + 过零电流收缩 ----
+    // 进入零区不立即换向，明确离开零区时才切换。
+    // 使用 SOGI dalpha 预测 75µs 后的过零点，补偿换向延迟。
+    // 在过零附近收缩电流参考，减轻换向期间输出电压折点。
     {
-        float alpha_now = pll_ui.sogi.alpha;
-        Uint16 crossed_positive = 0U;
-        Uint16 crossed_negative = 0U;
+        float alpha_now;
+        float alpha_zc;
+        float zc_abs;
+        float zc_scale;
+        Uint16 request_pos = 0U;
+        Uint16 request_neg = 0U;
 
-        if (half_change_block_count > 0U) half_change_block_count--;
+        alpha_now = pll_ui.sogi.alpha;
+        alpha_zc = alpha_now +
+                   ZC_ADVANCE_SEC * pll_ui.sogi.dalpha;
 
-        if (alpha_now > ZC_ALPHA_HYST_V)
+        if (zc_block_count > 0U) zc_block_count--;
+
+        if (zc_region == ZC_REGION_POS)
         {
-            if (zc_alpha_region == -1) crossed_positive = 1U;
-            zc_alpha_region = 1;
+            if (alpha_zc < ZC_ENTER_V)
+                zc_region = ZC_REGION_ZERO;
         }
-        else if (alpha_now < -ZC_ALPHA_HYST_V)
+        else if (zc_region == ZC_REGION_NEG)
         {
-            if (zc_alpha_region == 1) crossed_negative = 1U;
-            zc_alpha_region = -1;
+            if (alpha_zc > -ZC_ENTER_V)
+                zc_region = ZC_REGION_ZERO;
         }
-
-        if ((gate_state == GATE_ACTIVE) && (pll_ui.locked != 0U) &&
-            ((crossed_positive != 0U) || (crossed_negative != 0U)))
+        else
         {
-            if (half_change_block_count == 0U)
+            if (alpha_zc > ZC_EXIT_V)
             {
-                if (crossed_positive != 0U)
-                {
-                    debug_half_change_count++;
-                    request_half_change(HALF_POS);
-                }
-                else
-                {
-                    debug_half_change_count++;
-                    request_half_change(HALF_NEG);
-                }
-                half_change_block_count = ZC_BLOCK_SAMPLES;
+                if ((half != HALF_POS) && (zc_block_count == 0U))
+                    request_pos = 1U;
+                zc_region = ZC_REGION_POS;
             }
-            else
+            else if (alpha_zc < -ZC_EXIT_V)
             {
-                debug_rejected_zc_count++;
+                if ((half != HALF_NEG) && (zc_block_count == 0U))
+                    request_neg = 1U;
+                zc_region = ZC_REGION_NEG;
+            }
+        }
+
+        if ((gate_state == GATE_ACTIVE) && (pll_ui.locked != 0U))
+        {
+            if (request_pos != 0U)
+            {
+                request_half_change(HALF_POS);
+                zc_block_count = ZC_BLOCK_SAMPLES;
+                debug_half_change_count++;
+            }
+            else if (request_neg != 0U)
+            {
+                request_half_change(HALF_NEG);
+                zc_block_count = ZC_BLOCK_SAMPLES;
+                debug_half_change_count++;
             }
         }
 
         if ((gate_start_pending != 0U) && (fault_code == FAULT_OK) &&
-            ((crossed_positive != 0U) || (crossed_negative != 0U)))
+            ((request_pos != 0U) || (request_neg != 0U)))
         {
-            half = (alpha_now >= 0.0f) ? HALF_POS : HALF_NEG;
+            half = (alpha_zc >= 0.0f) ? HALF_POS : HALF_NEG;
             if (is_share_role() != 0U)
             {
                 next_half = half;
@@ -2388,7 +2413,16 @@ void control_update_fast(void)
 #endif
             }
             gate_start_pending = 0U;
-            half_change_block_count = ZC_BLOCK_SAMPLES;
+            zc_block_count = ZC_BLOCK_SAMPLES;
+        }
+
+        // 过零电流参考收缩：减轻换向期间输出电压折点
+        zc_abs = fabsf(alpha_zc);
+        if (zc_abs < ZC_CURRENT_FADE_V)
+        {
+            zc_scale = zc_abs / ZC_CURRENT_FADE_V;
+            zc_scale = clampf_local(zc_scale, 0.0f, 1.0f);
+            il_ref_target *= zc_scale;
         }
 
         ui_alpha_prev = alpha_now;
@@ -2661,7 +2695,7 @@ void slow_state_machine_1ms(void)
                 float ramp_span = fmaxf(target, 1.0f);
 #endif
                 u_ref_active = slew(u_ref_active, ramp_target,
-                                      ramp_span / 500.0f);
+                                      ramp_span / 250.0f);
             }
             if ((u_ref_active >= 1.0f) && (gate_state == GATE_BLOCKED))
                 gate_start_pending = 1U;
