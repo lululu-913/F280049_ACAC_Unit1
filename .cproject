@@ -82,8 +82,8 @@
 								<option id="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.DIAG_WRAP.628626072" name="Wrap diagnostic messages (--diag_wrap) [deprecated]" superClass="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.DIAG_WRAP" value="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.DIAG_WRAP.off" valueType="enumerated"/>
 								<option id="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.DISPLAY_ERROR_NUMBER.485540522" name="Emit diagnostic identifier numbers (--display_error_number)" superClass="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.DISPLAY_ERROR_NUMBER" value="true" valueType="boolean"/>
 								<option id="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.XML_LINK_INFO.218815844" name="Detailed link information data-base into &lt;file&gt; (--xml_link_info, -xml_link_info)" superClass="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.XML_LINK_INFO" value="${ProjName}_linkInfo.xml" valueType="string"/>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.PREFERRED_ORDER.853919191" name="Add &lt;function&gt; to preferred placement order list (--preferred_order)" superClass="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.PREFERRED_ORDER" valueType="stringList">
-									<listOptionValue builtIn="false" value="--abi=eabi"/>
+								<option IS_BUILTIN_EMPTY="true" IS_VALUE_EMPTY="true" id="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.PREFERRED_ORDER.853919191" name="Add &lt;function&gt; to preferred placement order list (--preferred_order)" superClass="com.ti.ccstudio.buildDefinitions.C2000_22.6.linkerID.PREFERRED_ORDER" valueType="stringList">
+									
 								</option>
 								<inputType id="com.ti.ccstudio.buildDefinitions.C2000_22.6.exeLinker.inputType__CMD_SRCS.1867210520" name="Linker Command Files" superClass="com.ti.ccstudio.buildDefinitions.C2000_22.6.exeLinker.inputType__CMD_SRCS"/>
 								<inputType id="com.ti.ccstudio.buildDefinitions.C2000_22.6.exeLinker.inputType__CMD2_SRCS.2017574414" name="Linker Command Files" superClass="com.ti.ccstudio.buildDefinitions.C2000_22.6.exeLinker.inputType__CMD2_SRCS"/>

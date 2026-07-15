@@ -1,0 +1,16 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "F280049_ACAC_Unit1",
+      "type": "ccs-debug",
+      "request": "launch",
+      "projectInfo": {
+        "name": "F280049_ACAC_Unit1",
+        "resourceId": "/F280049_ACAC_Unit1"
+      }
+    }
+  ]
+}

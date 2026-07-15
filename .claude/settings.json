@@ -3,7 +3,10 @@
     "allow": [
       "PowerShell(Rename-Item -Path \"d:\\\\CCS\\\\workspace_v12\\\\F280049_ACAC_Unit1\\\\main.c\" -NewName \"converter1.c\")",
       "Bash(git init *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(git remote *)",
+      "Bash(grep -n \"^t//\" converter1.c)",
+      "Bash(git -C \"d:/CCS/workspace_v12/F280049_ACAC_Unit1\" log --oneline -5)"
     ]
   }
 }

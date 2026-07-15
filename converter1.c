@@ -38,7 +38,7 @@
 #define FORMAL_HW_RELEASE_ACK           0
 #define DIRECTION_DIAG_8V              0
 #define AUX_TOPOLOGY                   AUX_SHARED_LAB_DEBUG
-#define CURRENT_LOOP_INTEGRAL_ENABLE   0U
+#define CURRENT_LOOP_INTEGRAL_ENABLE   1U
 #define GATE_OPEN_LOOP_TEST           0U
 #define OPEN_LOOP_DUTY                0.10f
 
@@ -222,10 +222,10 @@
 #define PLL_W_MIN                        (TWO_PI_F * 45.0f)
 #define PLL_W_MAX                        (TWO_PI_F * 55.0f)
 #define PLL_SOGI_K                       1.41421356237f
-#define CURRENT_KP                       5.03f
-#define CURRENT_KI                       632.0f
+#define CURRENT_KP                       2.0f
+#define CURRENT_KI                       80.0f
 #define VOLTAGE_KP                       1.0e-3f
-#define VOLTAGE_KI                       1.0e-2f
+#define VOLTAGE_KI                       5.0e-2f
 #define SHARE_KP                         0.25f
 #define SHARE_KI                         78.5f
 
@@ -554,7 +554,7 @@ const char *profile_text(void);
 //********** 主循环 **********//
 // 主循环不直接产生 PWM，只处理模式、按键、OLED、看门狗和故障复位。
 void main(void)
-{
+    {
     Uint32 reset_cause;
 
 #ifdef _FLASH
@@ -1577,10 +1577,18 @@ void controllers_init(void)
     pll_uo.amplitude_published = 5.0f;
     pi_id.kp = CURRENT_KP;
     pi_id.ki = CURRENT_LOOP_INTEGRAL_ENABLE ? CURRENT_KI : 0.0f;
-    pi_id.out_min = -30.0f; pi_id.out_max = 30.0f;
-    pi_vd.kp = VOLTAGE_KP;  pi_vd.ki = VOLTAGE_KI;
-    pi_vd.out_min = -0.30f; pi_vd.out_max = 0.30f;
-    pi_vq = pi_vd;
+    pi_id.out_min = -5.0f; pi_id.out_max = 5.0f;
+    pi_vd.kp = VOLTAGE_KP;
+    pi_vd.ki = VOLTAGE_KI;
+    pi_vd.integral = 0.0f;
+    pi_vd.out_min = -0.50f;
+    pi_vd.out_max =  0.90f;
+
+    pi_vq.kp = 5.0e-4f;
+    pi_vq.ki = 5.0e-3f;
+    pi_vq.integral = 0.0f;
+    pi_vq.out_min = -0.05f;
+    pi_vq.out_max =  0.05f;
     pi_sd.kp = SHARE_KP; pi_sd.ki = SHARE_KI;
     pi_sd.out_min = -I_BRANCH_CMD_MAX; pi_sd.out_max = I_BRANCH_CMD_MAX;
     pi_sq = pi_sd;
@@ -2250,8 +2258,8 @@ void control_update_fast(void)
      * 将1 kHz外环输出平滑插值到20 kHz，
      * 避免每1 ms出现一次明显阶跃。
      */
-    dff_held = slew(dff_held, dff_target, 0.0005f);
-    iconv_ref_held = slew(iconv_ref_held, iconv_ref_target, 0.003f);
+    dff_held = slew(dff_held, dff_target, 0.0015f);
+    iconv_ref_held = slew(iconv_ref_held, iconv_ref_target, 0.006f);
 
     float il_ref_target;
     float il_ref_dot;
@@ -2301,7 +2309,7 @@ void control_update_fast(void)
             ((d_unsat < PWM_D_MIN) && (qsign * error > 0.0f)))
         {
             pi_id.integral += pi_id.ki * CONTROL_TS * error;
-            pi_id.integral = clampf_local(pi_id.integral, -30.0f, 30.0f);
+            pi_id.integral = clampf_local(pi_id.integral, -5.0f, 5.0f);
         }
     }
     else
@@ -2532,8 +2540,15 @@ void slow_state_machine_1ms(void)
                 else if (model_active == MODEL_PARALLEL)
                     run_state = ST_SS5_RAMP;
 #endif
-                else run_state = ST_VOLT_RAMP;
-                state_ms = 0UL;
+                else
+                {
+                    pi_reset(&pi_vd);
+                    pi_reset(&pi_vq);
+                    pi_vd.integral = 0.20f;
+                    pi_vq.integral = 0.0f;
+                    run_state = ST_VOLT_RAMP;
+                    state_ms = 0UL;
+                }
             }
             else if (state_ms > 2000UL) latch_fault(FAULT_PLL);
             break;
@@ -2617,6 +2632,10 @@ void slow_state_machine_1ms(void)
             else ss5_stable_ms = 0U;
             if (ss5_stable_ms >= 500U)
             {
+                pi_reset(&pi_vd);
+                pi_reset(&pi_vq);
+                pi_vd.integral = 0.20f;
+                pi_vq.integral = 0.0f;
                 run_state = ST_VOLT_RAMP;
                 state_ms = 0UL;
                 voltage_stable_ms = 0U;
@@ -2642,7 +2661,7 @@ void slow_state_machine_1ms(void)
                 float ramp_span = fmaxf(target, 1.0f);
 #endif
                 u_ref_active = slew(u_ref_active, ramp_target,
-                                      ramp_span / 1000.0f);
+                                      ramp_span / 500.0f);
             }
             if ((u_ref_active >= 1.0f) && (gate_state == GATE_BLOCKED))
                 gate_start_pending = 1U;
