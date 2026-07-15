@@ -30,8 +30,8 @@ SECTIONS
 {
    codestart        : > BEGIN,     PAGE = 0
    .TI.ramfunc      : > RAMM0      PAGE = 0
-   .text            : >>RAMM0 | RAMLS0 | RAMLS1 | RAMLS2 | RAMLS3 | RAMLS4 | RAMLS5 | RAMLS6 | RAMLS7 | RAMGS3, PAGE = 0
-   .cinit           : > RAMLS7,    PAGE = 0
+   .text            : >>RAMM0 | RAMLS0 | RAMLS1 | RAMLS2 | RAMLS3 | RAMLS4 | RAMLS5 | RAMLS6 | RAMLS7, PAGE = 0
+   .cinit           : > RAMGS3,    PAGE = 0
    .pinit           : > RAMM0,     PAGE = 0
    .switch          : > RAMM0,     PAGE = 0
    .init_array      : > RAMM0,     PAGE = 0

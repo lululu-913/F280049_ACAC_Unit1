@@ -36,7 +36,7 @@
 #define HALF_CURRENT_STAGE          HALF_SAFE
 #define HALF_IHI_TEST_PASSED_ACK       0
 #define FORMAL_HW_RELEASE_ACK           0
-#define DIRECTION_DIAG_6V              1
+#define DIRECTION_DIAG_8V              0
 #define AUX_TOPOLOGY                   AUX_SHARED_LAB_DEBUG
 #define CURRENT_LOOP_INTEGRAL_ENABLE   0U
 #define GATE_OPEN_LOOP_TEST           0U
@@ -70,24 +70,24 @@
 #if FORMAL_HW_RELEASE_ACK != 0 && FORMAL_HW_RELEASE_ACK != 1
 #error invalid FORMAL_HW_RELEASE_ACK
 #endif
-#if DIRECTION_DIAG_6V != 0 && DIRECTION_DIAG_6V != 1
-#error invalid DIRECTION_DIAG_6V
+#if DIRECTION_DIAG_8V != 0 && DIRECTION_DIAG_8V != 1
+#error invalid DIRECTION_DIAG_8V
 #endif
 #if CURRENT_LOOP_INTEGRAL_ENABLE != 0 && CURRENT_LOOP_INTEGRAL_ENABLE != 1
 #error invalid CURRENT_LOOP_INTEGRAL_ENABLE
 #endif
-#if DIRECTION_DIAG_6V && \
+#if DIRECTION_DIAG_8V && \
    (POWER_PROFILE != PROFILE_HALF || HALF_CURRENT_STAGE != HALF_SAFE || \
     AUX_TOPOLOGY != AUX_SHARED_LAB_DEBUG || HALF_IHI_TEST_PASSED_ACK != 0)
-#error 6V direction diagnostic requires HALF SAFE and lab auxiliary
+#error 8V direction diagnostic requires HALF SAFE and lab auxiliary
 #endif
 #if GATE_OPEN_LOOP_TEST && \
    ((POWER_STAGE_ENABLE != 1U) || \
-    (DIRECTION_DIAG_6V != 1U) || \
+    (DIRECTION_DIAG_8V != 1U) || \
     (POWER_PROFILE != PROFILE_HALF) || \
     (HALF_CURRENT_STAGE != HALF_SAFE) || \
     (AUX_TOPOLOGY != AUX_SHARED_LAB_DEBUG))
-#error Open-loop gate test requires isolated 6V HALF_SAFE configuration
+#error Open-loop gate test requires isolated 8V HALF_SAFE configuration
 #endif
 #if POWER_PROFILE == PROFILE_FULL && AUX_TOPOLOGY != AUX_SHARED_FORMAL
 #error FULL profile requires approved transformer-fed auxiliary supply
@@ -140,16 +140,18 @@
 
 //********** 电压范围与保护阈值 (V) **********//
 #if POWER_PROFILE == PROFILE_HALF
-// 输入电压启动/运行窗口
-#define UI_START_MIN                     16.5f
-#define UI_START_MAX                     19.0f
-#define UI_RUN_MIN                       15.0f
-#define UI_RUN_MAX                       19.0f
-#define UO_SINGLE_MAX                    17.5f
-#define UO_PARALLEL_MAX                  15.0f
-#define UO_DEFAULT                       15.0f
-#define UO_RMS_HARD_MAX                  18.5f
-#define UO_ABS_PK_TRIP                   27.0f
+// 12 V RMS输入低功率测试
+#define UI_START_MIN                     10.5f
+#define UI_START_MAX                     13.5f
+#define UI_RUN_MIN                       10.0f
+#define UI_RUN_MAX                       14.0f
+
+// 第一次测试先限制为低输出电压
+#define UO_SINGLE_MAX                    10.0f
+#define UO_PARALLEL_MAX                  8.0f
+#define UO_DEFAULT                       5.0f
+#define UO_RMS_HARD_MAX                  11.0f
+#define UO_ABS_PK_TRIP                   16.0f
 #define UOV_MARGIN                       1.0f
 #else
 // 输入电压启动/运行窗口
@@ -190,7 +192,7 @@
 #define IL_RMS_TRIP                      2.40f
 #endif
 
-#if DIRECTION_DIAG_6V
+#if DIRECTION_DIAG_8V
 #undef UI_START_MIN
 #undef UI_START_MAX
 #undef UI_RUN_MIN
@@ -210,6 +212,10 @@
 #define IL_CMPSS_TRIP                    0.80f
 #endif
 
+//********** 过零迟滞换向 **********//
+#define ZC_ALPHA_HYST_V                 0.10f
+#define ZC_BLOCK_SAMPLES                160U
+
 //********** PLL 和控制增益（调试初值）**********//
 #define PLL_KP                           88.9f
 #define PLL_KI                           3948.0f
@@ -218,8 +224,8 @@
 #define PLL_SOGI_K                       1.41421356237f
 #define CURRENT_KP                       5.03f
 #define CURRENT_KI                       632.0f
-#define VOLTAGE_KP                       1.49e-3f
-#define VOLTAGE_KI                       5.31e-2f
+#define VOLTAGE_KP                       1.0e-3f
+#define VOLTAGE_KI                       1.0e-2f
 #define SHARE_KP                         0.25f
 #define SHARE_KI                         78.5f
 
@@ -411,7 +417,9 @@ float it_fund_rms = 0.0f;
 float io_fund_rms = 0.0f;
 float share_error_pct = 0.0f;
 float iconv_ref_held = 0.0f;
+float iconv_ref_target = 0.0f;
 float dff_held = PWM_D_MIN;
+float dff_target = PWM_D_MIN;
 float uo_amp_held = 0.0f;
 Uint16 k_limited = 0U;
 Uint16 bus_valid = 0U;
@@ -421,6 +429,8 @@ Uint16 il_fast_count = 0U;
 Uint16 io_pk_count = 0U;
 Uint16 it_pk_count = 0U;
 Uint16 uo_pk_count = 0U;
+volatile float debug_dynamic_ov = 0.0f;
+volatile float debug_u_ref_active = 0.0f;
 Uint16 il_rms_count = 0U;
 Uint16 io_rms_count = 0U;
 Uint16 it_rms_count = 0U;
@@ -442,6 +452,13 @@ Uint16 trip_clear_safe_count = 0U;
 Uint16 open_loop_test_ms = 0U;
 float ui_alpha_prev = 0.0f;
 volatile Uint32 debug_half_change_count = 0UL;
+int16 zc_alpha_region = 0;
+Uint16 half_change_block_count = 0U;
+volatile Uint32 debug_rejected_zc_count = 0UL;
+volatile float debug_uo_d = 0.0f;
+volatile float debug_uo_q = 0.0f;
+volatile float debug_vd_error = 0.0f;
+volatile float debug_vq_error = 0.0f;
 volatile Uint32 debug_zc_a_count = 0UL;
 volatile Uint32 debug_zc_b_count = 0UL;
 volatile Uint32 debug_zc_done_count = 0UL;
@@ -832,7 +849,7 @@ Uint16 predicted_zero(void)
 float effective_u_ref(void)
 {
     // 将按键设定值叠加低端/高端 ±25 mV 微调；普通电压档保持 0.5 V 步进。
-    if (DIRECTION_DIAG_6V) return 1.0f;
+    if (DIRECTION_DIAG_8V) return 1.0f;
 #if UNIT_ROLE == UNIT_1
     if (model_cmd == MODEL_VOLTAGE || model_active == MODEL_VOLTAGE)
     {
@@ -1146,8 +1163,8 @@ const char *state_text(RunState state)
 
 const char *profile_text(void)
 {
-#if DIRECTION_DIAG_6V
-    return "6VDg";
+#if DIRECTION_DIAG_8V
+    return "8VDg";
 #elif POWER_PROFILE == PROFILE_FULL
     return "FULL";
 #elif AUX_TOPOLOGY == AUX_SHARED_LAB_DEBUG
@@ -1562,7 +1579,7 @@ void controllers_init(void)
     pi_id.ki = CURRENT_LOOP_INTEGRAL_ENABLE ? CURRENT_KI : 0.0f;
     pi_id.out_min = -30.0f; pi_id.out_max = 30.0f;
     pi_vd.kp = VOLTAGE_KP;  pi_vd.ki = VOLTAGE_KI;
-    pi_vd.out_min = -I_BRANCH_CMD_MAX; pi_vd.out_max = I_BRANCH_CMD_MAX;
+    pi_vd.out_min = -0.30f; pi_vd.out_max = 0.30f;
     pi_vq = pi_vd;
     pi_sd.kp = SHARE_KP; pi_sd.ki = SHARE_KI;
     pi_sd.out_min = -I_BRANCH_CMD_MAX; pi_sd.out_max = I_BRANCH_CMD_MAX;
@@ -1825,7 +1842,7 @@ void signal_processing_fast(void)
 {
     // 20 kHz 快速路径：SOGI 更新、PLL 相位/频率递推、dq 投影、RMS 滑动窗累加。
     // 不使用 sinf/cosf/sqrtf；dq 变换复用 PLL 缓存的正交状态。
-    float ui_amp_min = DIRECTION_DIAG_6V ? 2.0f : 5.0f;
+    float ui_amp_min = DIRECTION_DIAG_8V ? 2.0f : 5.0f;
 
     pll_update_fast(&pll_ui, meas.ui, ui_amp_min);
     sogi_update(&uo_observer, meas.uo, pll_ui.omega);
@@ -1848,7 +1865,7 @@ void signal_processing_slow(void)
 {
     // 1 kHz 慢速路径：PLL 幅值/锁定/归一化/Δθ 重算、dq 基波 RMS 发布、
     // RMS/均值发布、uo_observer 幅值发布。
-    float ui_amp_min = DIRECTION_DIAG_6V ? 2.0f : 5.0f;
+    float ui_amp_min = DIRECTION_DIAG_8V ? 2.0f : 5.0f;
 
     pll_slow_update(&pll_ui, ui_amp_min);
 
@@ -1947,12 +1964,48 @@ void software_protection_slow(void)
     else it_rms_count = 0U;
 #endif
 
-    dynamic_ov = u_ref_active + fmaxf(UOV_MARGIN, 0.10f * u_ref_active);
+    dynamic_ov = u_ref_active +
+                 fmaxf(1.5f, 0.20f * u_ref_active);
+
     dynamic_ov = fminf(dynamic_ov, UO_RMS_HARD_MAX);
-    if (is_voltage_role() == 0U) dynamic_ov = UO_RMS_HARD_MAX;
-    if ((run_state == ST_SS5_RAMP) || (run_state == ST_SS5_HOLD))
+
+    if (is_voltage_role() == 0U)
+    {
+        dynamic_ov = UO_RMS_HARD_MAX;
+    }
+
+    /*
+     * 启动爬升阶段不能让保护线跟着尚未爬升完成的
+     * u_ref_active降得过低，应参考最终目标值设置下限。
+     */
+    if (run_state == ST_VOLT_RAMP)
+    {
+        float ramp_ov_min = 1.30f * effective_u_ref();
+
+        dynamic_ov = fmaxf(dynamic_ov, ramp_ov_min);
+    }
+
+    if ((run_state == ST_SS5_RAMP) ||
+        (run_state == ST_SS5_HOLD))
+    {
         dynamic_ov = 7.0f;
-    if (meas.uo_rms > dynamic_ov) latch_fault(FAULT_UO_OV);
+    }
+
+    debug_dynamic_ov = dynamic_ov;
+    debug_u_ref_active = u_ref_active;
+
+    /* 连续超过10 ms才确认 */
+    if (meas.uo_rms > dynamic_ov)
+    {
+        if (++uo_pk_count >= 10U)
+        {
+            latch_fault(FAULT_UO_OV);
+        }
+    }
+    else
+    {
+        uo_pk_count = 0U;
+    }
 
     if (input_run_ok() == 0U)
     {
@@ -2088,7 +2141,7 @@ void control_update_slow(void)
         dff = uo_amp / fmaxf(ui_amp + uo_amp, 1.0f);
     }
     dff = clampf_local(dff, PWM_D_MIN, PWM_D_MAX);
-    dff_held = dff;
+    dff_target = dff;
 
     ctrl_active = ((gate_state == GATE_ACTIVE) &&
                    (run_state == ST_VOLT_RAMP ||
@@ -2101,8 +2154,8 @@ void control_update_slow(void)
     // 稳压角色：vd 外环调节有功电流，vq 外环压制无功分量，同时加入 Co 电流前馈。
     if (is_voltage_role() != 0U)
     {
-        float v_alpha = -uo_observer.alpha;
-        float v_beta = -uo_observer.beta;
+        float v_alpha = uo_observer.alpha;
+        float v_beta  = uo_observer.beta;
         float vd = v_alpha * sn - v_beta * cs;
         float vq = v_alpha * cs + v_beta * sn;
         float id_corr;
@@ -2113,6 +2166,10 @@ void control_update_slow(void)
         target_u = SQRT2_F * u_ref_active;
         id_corr = pi_update_dt(&pi_vd, target_u - vd, ctrl_active, 0.001f);
         iq_corr = pi_update_dt(&pi_vq, -vq, ctrl_active, 0.001f);
+        debug_uo_d = vd;
+        debug_uo_q = vq;
+        debug_vd_error = target_u - vd;
+        debug_vq_error = -vq;
         duo_ref = -target_u * pll_ui.omega * cs;
         iconv_ref = io_ff + CO_FARAD * duo_ref -
                     (id_corr * sn + iq_corr * cs);
@@ -2179,7 +2236,7 @@ void control_update_slow(void)
 
     iconv_ref = clampf_local(iconv_ref, -SQRT2_F * I_BRANCH_CMD_MAX,
                              SQRT2_F * I_BRANCH_CMD_MAX);
-    iconv_ref_held = iconv_ref;
+    iconv_ref_target = iconv_ref;
 }
 
 // 内环：电感电流 PI — 20 kHz 快速路径。
@@ -2189,6 +2246,13 @@ void control_update_fast(void)
     // 20 kHz 快速路径：将保持的 iconv_ref 映射为电感电流参考，经斜率限制后
     // 通过电流内环 PI 生成占空比，同时处理过零换向和门极启动。
     // 不使用 sinf/cosf/sqrtf；dff 和 iconv_ref 来自 1 kHz 慢速路径。
+    /*
+     * 将1 kHz外环输出平滑插值到20 kHz，
+     * 避免每1 ms出现一次明显阶跃。
+     */
+    dff_held = slew(dff_held, dff_target, 0.0005f);
+    iconv_ref_held = slew(iconv_ref_held, iconv_ref_target, 0.003f);
+
     float il_ref_target;
     float il_ref_dot;
     float error;
@@ -2250,27 +2314,47 @@ void control_update_fast(void)
         pi_reset(&pi_id);
     }
 
-    // ---- 半周换向：直接检测 SOGI alpha 符号交叉 ----
-    // 不再使用 predicted_zero()，避免 PLL theta 与正交递推 sin_theta/cos_theta
-    // 不同步导致的过零误判。
+    // ---- 半周换向：带迟滞的过零检测 ----
+    // 只有信号明确穿过±0.3V区域后，才认定完成一次换向。
+    // 最小换向间隔 8ms (160 采样 @20kHz)，防止噪声导致频繁误换向。
     {
         float alpha_now = pll_ui.sogi.alpha;
-        Uint16 crossed_positive =
-            ((ui_alpha_prev < 0.0f) && (alpha_now >= 0.0f)) ? 1U : 0U;
-        Uint16 crossed_negative =
-            ((ui_alpha_prev >= 0.0f) && (alpha_now < 0.0f)) ? 1U : 0U;
+        Uint16 crossed_positive = 0U;
+        Uint16 crossed_negative = 0U;
 
-        if ((gate_state == GATE_ACTIVE) && (pll_ui.locked != 0U))
+        if (half_change_block_count > 0U) half_change_block_count--;
+
+        if (alpha_now > ZC_ALPHA_HYST_V)
         {
-            if (crossed_positive != 0U)
+            if (zc_alpha_region == -1) crossed_positive = 1U;
+            zc_alpha_region = 1;
+        }
+        else if (alpha_now < -ZC_ALPHA_HYST_V)
+        {
+            if (zc_alpha_region == 1) crossed_negative = 1U;
+            zc_alpha_region = -1;
+        }
+
+        if ((gate_state == GATE_ACTIVE) && (pll_ui.locked != 0U) &&
+            ((crossed_positive != 0U) || (crossed_negative != 0U)))
+        {
+            if (half_change_block_count == 0U)
             {
-                debug_half_change_count++;
-                request_half_change(HALF_POS);
+                if (crossed_positive != 0U)
+                {
+                    debug_half_change_count++;
+                    request_half_change(HALF_POS);
+                }
+                else
+                {
+                    debug_half_change_count++;
+                    request_half_change(HALF_NEG);
+                }
+                half_change_block_count = ZC_BLOCK_SAMPLES;
             }
-            else if (crossed_negative != 0U)
+            else
             {
-                debug_half_change_count++;
-                request_half_change(HALF_NEG);
+                debug_rejected_zc_count++;
             }
         }
 
@@ -2282,7 +2366,7 @@ void control_update_fast(void)
             {
                 next_half = half;
                 pwm_set_zc_a(half);
-                if (pwm_clear_ost() == 0U) { ui_alpha_prev = alpha_now; return; }
+                if (pwm_clear_ost() == 0U) return;
 #if POWER_STAGE_ENABLE == 1
                 gate_state = GATE_ZC_A;
 #endif
@@ -2290,12 +2374,13 @@ void control_update_fast(void)
             else
             {
                 pwm_set_normal(half, duty);
-                if (pwm_clear_ost() == 0U) { ui_alpha_prev = alpha_now; return; }
+                if (pwm_clear_ost() == 0U) return;
 #if POWER_STAGE_ENABLE == 1
                 gate_state = GATE_ACTIVE;
 #endif
             }
             gate_start_pending = 0U;
+            half_change_block_count = ZC_BLOCK_SAMPLES;
         }
 
         ui_alpha_prev = alpha_now;
@@ -2797,7 +2882,7 @@ void key_action(Uint16 key, Uint16 repeat_event, Uint16 release_event,
     }
 
     if (run_state == ST_FAULT) return;
-#if DIRECTION_DIAG_6V
+#if DIRECTION_DIAG_8V
     return;
 #endif
 
