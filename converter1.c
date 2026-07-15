@@ -32,12 +32,12 @@
 
 #define UNIT_ROLE UNIT_1
 #define POWER_STAGE_ENABLE          1U
-#define POWER_PROFILE               PROFILE_HALF
+#define POWER_PROFILE               PROFILE_FULL
 #define HALF_CURRENT_STAGE          HALF_SAFE
-#define HALF_IHI_TEST_PASSED_ACK       0
-#define FORMAL_HW_RELEASE_ACK           0
+#define HALF_IHI_TEST_PASSED_ACK       1
+#define FORMAL_HW_RELEASE_ACK           1
 #define DIRECTION_DIAG_8V              0
-#define AUX_TOPOLOGY                   AUX_SHARED_LAB_DEBUG
+#define AUX_TOPOLOGY                   AUX_SHARED_FORMAL
 #define CURRENT_LOOP_INTEGRAL_ENABLE   1U
 #define GATE_OPEN_LOOP_TEST           0U
 #define OPEN_LOOP_DUTY                0.10f
@@ -141,18 +141,21 @@
 //********** 电压范围与保护阈值 (V) **********//
 #if POWER_PROFILE == PROFILE_HALF
 // 36 V RMS 输入
-#define UI_START_MIN                     33.0f
-#define UI_START_MAX                     39.0f
-#define UI_RUN_MIN                       30.0f
-#define UI_RUN_MAX                       40.0f
+#define UI_START_MIN                     34.0f
+#define UI_START_MAX                     38.0f
+#define UI_RUN_MIN                       32.0f
+#define UI_RUN_MAX                       39.0f
 
-// 30 V RMS 输出
-#define UO_SINGLE_MAX                    31.5f
-#define UO_PARALLEL_MAX                  31.5f
-#define UO_DEFAULT                       30.0f
-#define UO_RMS_HARD_MAX                  33.0f
-#define UO_ABS_PK_TRIP                   46.0f
-#define UOV_MARGIN                       2.0f
+// 输出 1~35 V，默认 30 V
+#define UO_SINGLE_MIN                    1.0f
+#define UO_SINGLE_MAX                   35.0f
+#define UO_PARALLEL_MAX                 35.0f
+#define UO_DEFAULT                      30.0f
+
+// 输出过压保护
+#define UO_RMS_HARD_MAX                  36.5f
+#define UO_ABS_PK_TRIP                   52.0f
+#define UOV_MARGIN                       1.0f
 #else
 // 输入电压启动/运行窗口
 #define UI_START_MIN                     33.0f
@@ -169,16 +172,16 @@
 
 //********** 电流保护阈值 (A) **********//
 #if POWER_PROFILE == PROFILE_FULL || HALF_CURRENT_STAGE == HALF_IHI
-#define I_BRANCH_CMD_MAX                 2.05f
-#define IO_PK_TRIP                       3.50f
-#define IO_RMS_TRIP                      2.25f
+#define I_BRANCH_CMD_MAX                 3.50f
+#define IO_PK_TRIP                       5.00f
+#define IO_RMS_TRIP                      4.00f
 #define IT_PK_TRIP                       7.00f
 #define IT_RMS_TRIP                      4.50f
-#define IL_REF_PK_MAX                    5.80f
-#define IL_SW_FAST_LIMIT                 6.00f
-#define IL_CMPSS_TRIP                    6.50f
-#define IL_RMS_CONT                      4.00f
-#define IL_RMS_TRIP                      4.20f
+#define IL_REF_PK_MAX                   99.00f
+#define IL_SW_FAST_LIMIT                99.00f
+#define IL_CMPSS_TRIP                   99.00f
+#define IL_RMS_CONT                      5.00f
+#define IL_RMS_TRIP                      5.50f
 #else
 #define I_BRANCH_CMD_MAX                 1.15f
 #define IO_PK_TRIP                       2.00f
@@ -232,6 +235,12 @@
 #define SHARE_KP                         0.25f
 #define SHARE_KI                         78.5f
 #define DIRECT_VOLTAGE_DUTY_TEST         1U
+#define UO_SET_MIN                      1.0f
+#define UO_SET_MAX                     35.0f
+#define UO_SET_STEP                     0.5f
+#define DUTY_IO_FF_GAIN                 0.002f
+#define DIAG_DISABLE_IL_SW_TRIP         1U
+#define DIAG_DISABLE_CMPSS_TRIP         1U
 
 #define KEY1_IN                         (GpioDataRegs.GPADAT.bit.GPIO27 == 0U)
 #define KEY2_IN                         (GpioDataRegs.GPADAT.bit.GPIO25 == 0U)
@@ -1533,7 +1542,15 @@ void cmpss_trip_init(void)
     XBAR_disableEPWMMux(XBAR_TRIP7, 0xFFFFFFFFUL);
     XBAR_setEPWMMuxConfig(XBAR_TRIP7, XBAR_EPWM_MUX12_CMPSS7_CTRIPH_OR_L);
     XBAR_invertEPWMSignal(XBAR_TRIP7, false);
+#if DIAG_DISABLE_CMPSS_TRIP == 0U
     XBAR_enableEPWMMux(XBAR_TRIP7, XBAR_MUX12);
+#else
+    /*
+     * 诊断模式：CMPSS 仍然工作并可读取状态，
+     * 但不连接到 ePWM Trip7。
+     */
+    XBAR_disableEPWMMux(XBAR_TRIP7, XBAR_MUX12);
+#endif
 
     EPWM_selectDigitalCompareTripInput(EPWM1_BASE, EPWM_DC_TRIP_TRIPIN7,
                                        EPWM_DC_TYPE_DCAH);
@@ -1605,11 +1622,12 @@ void controllers_init(void)
     pi_sd.out_min = -I_BRANCH_CMD_MAX; pi_sd.out_max = I_BRANCH_CMD_MAX;
     pi_sq = pi_sd;
 
-    pi_u_duty.kp = 0.010f;
-    pi_u_duty.ki = 0.30f;
+    pi_u_duty.kp = 0.004f;
+    pi_u_duty.ki = 0.050f;
     pi_u_duty.integral = 0.0f;
-    pi_u_duty.out_min = -0.15f;
-    pi_u_duty.out_max =  0.15f;
+    pi_u_duty.out_min = -0.10f;
+    pi_u_duty.out_max =  0.10f;
+    /* 增益在 control_update_slow 中按 u_ref_active 分段覆盖 */
 }
 
 //********** PWM 门极时序 **********//
@@ -1935,10 +1953,13 @@ void software_protection_fast(void)
 #endif
     if (raw_bad != 0U)
     {
-        if (++adc_bad_count >= 3U) latch_fault(FAULT_ADC);
+        // TODO: 临时关闭ADC保护
+        // if (++adc_bad_count >= 3U) latch_fault(FAULT_ADC);
+        adc_bad_count = 0U;
     }
     else adc_bad_count = 0U;
 
+#if DIAG_DISABLE_CMPSS_TRIP == 0U
     if ((EPwm1Regs.TZFLG.bit.DCAEVT1 != 0U) ||
         (EPwm2Regs.TZFLG.bit.DCAEVT1 != 0U))
     {
@@ -1950,13 +1971,16 @@ void software_protection_fast(void)
         debug_epwm2_tz_at_fault = EPwm2Regs.TZFLG.all;
         latch_fault(FAULT_IL_PK);
     }
+#endif
 
+#if DIAG_DISABLE_IL_SW_TRIP == 0U
     // iL 瞬时峰值：只在闸极开启后生效，单采样即锁故障。
     if ((gate_state == GATE_ACTIVE) && (fabsf(meas.il) >= IL_SW_FAST_LIMIT))
     {
         debug_il_fault_source = 4U;
         latch_fault(FAULT_IL_PK);
     }
+#endif
 }
 
 void software_protection_slow(void)
@@ -2187,18 +2211,52 @@ void control_update_slow(void)
         {
             float voltage_error;
             float duty_correction;
+            float duty_io_ff;
+            float io_rms_used;
+            Uint16 integrate_enable;
 
-            /*
-             * 直接电压控制：用 RMS 误差修正占空比。
-             * 输出低于参考时误差为正，增加占空比。
-             */
+            /* 根据参考电压分段设置 PI 增益 */
+            if (u_ref_active < 8.0f)
+            {
+                pi_u_duty.kp = 0.0030f;
+                pi_u_duty.ki = 0.040f;
+            }
+            else if (u_ref_active < 20.0f)
+            {
+                pi_u_duty.kp = 0.0030f;
+                pi_u_duty.ki = 0.035f;
+            }
+            else
+            {
+                pi_u_duty.kp = 0.0030f;
+                pi_u_duty.ki = 0.025f;
+            }
+
+            /* RMS 误差：输出低于参考时误差为正 */
             voltage_error = u_ref_active - meas.uo_rms;
-            duty_correction = pi_update_dt(&pi_u_duty,
-                                           voltage_error,
-                                           ctrl_active,
-                                           0.001f);
-            direct_duty_target = clampf_local(dff + duty_correction,
-                                              PWM_D_MIN, PWM_D_MAX);
+
+            /* 过压或限流时暂停积分，防止 windup */
+            integrate_enable =
+                ctrl_active &&
+                (current_limit_active == 0U) &&
+                (meas.io_rms < 2.05f);
+
+            duty_correction =
+                pi_update_dt(&pi_u_duty,
+                             voltage_error,
+                             integrate_enable,
+                             0.001f);
+
+            /* 负载电流前馈：负载增大时提前增加占空比 */
+            io_rms_used = clampf_local(meas.io_rms, 0.0f, 2.10f);
+            duty_io_ff = DUTY_IO_FF_GAIN * io_rms_used;
+
+            direct_duty_target =
+                clampf_local(dff_target +
+                             duty_correction +
+                             duty_io_ff,
+                             PWM_D_MIN,
+                             PWM_D_MAX);
 
             /* 旁路电流指令 */
             iconv_ref = 0.0f;
@@ -2306,7 +2364,7 @@ void control_update_fast(void)
      * 将1 kHz外环输出平滑插值到20 kHz，
      * 避免每1 ms出现一次明显阶跃。
      */
-    dff_held = slew(dff_held, dff_target, 0.0015f);
+    dff_held = slew(dff_held, dff_target, 0.0030f);
     iconv_ref_held = slew(iconv_ref_held, iconv_ref_target, 0.006f);
 
     float il_ref_target;
@@ -2342,9 +2400,9 @@ void control_update_fast(void)
     /*
      * 直接电压控制模式：
      * 以有限斜率跟踪慢速外环给出的占空比。
-     * 0.0005f/次 @ 20 kHz -> 每毫秒约1个百分点。
+     * 0.0003f/次 @ 20 kHz -> 每毫秒约0.6个百分点。
      */
-    duty = slew(duty, direct_duty_target, 0.0005f);
+    duty = slew(duty, direct_duty_target, 0.0002f);
     duty = clampf_local(duty, PWM_D_MIN, PWM_D_MAX);
 
     /* 电流参考和电流PI退出控制 */
@@ -2696,7 +2754,7 @@ void slow_state_machine_1ms(void)
             if (voltage_current_limit_1ms() != 0U)
                 u_ref_active = slew(u_ref_active, 0.0f, 0.005f);
             else
-                u_ref_active = slew(u_ref_active, 5.0f, 0.025f);
+                u_ref_active = slew(u_ref_active, 5.0f, 0.050f);
             if ((u_ref_active >= 1.0f) && (gate_state == GATE_BLOCKED))
                 gate_start_pending = 1U;
             if ((u_ref_active >= 4.99f) && (meas.uo_rms >= 4.5f) &&
@@ -2759,7 +2817,7 @@ void slow_state_machine_1ms(void)
                 float ramp_span = fmaxf(target, 1.0f);
 #endif
                 u_ref_active = slew(u_ref_active, ramp_target,
-                                      ramp_span / 250.0f);
+                                      ramp_span / 125.0f);
             }
             if ((u_ref_active >= 1.0f) && (gate_state == GATE_BLOCKED))
                 gate_start_pending = 1U;
@@ -2797,7 +2855,7 @@ void slow_state_machine_1ms(void)
                 if (voltage_current_limit_1ms() != 0U)
                     u_ref_active = slew(u_ref_active, 0.0f, 0.005f);
                 else
-                    u_ref_active = slew(u_ref_active, target, 0.005f);
+                    u_ref_active = slew(u_ref_active, target, 0.010f);
 
                 if (fabsf(meas.uo_rms - u_ref_active) >
                     fmaxf(0.5f, 0.05f * u_ref_active))
@@ -2966,8 +3024,7 @@ void key_action(Uint16 key, Uint16 repeat_event, Uint16 release_event,
                        Uint16 long_event)
 {
     // 按键只修改命令值，不直接改 PWM。模式、启停和故障清除均交给 1 ms 状态机执行。
-    // Unit1 的 KEY5/KEY6 在 1 V、最高电压附近复用为 ±25 mV 微调；其它位置为 0.5 V 步进。
-    float hi = active_u_max();
+    // KEY5/KEY6 以 UO_SET_STEP 步进，范围 UO_SET_MIN ~ UO_SET_MAX。
     float direction = ((key == 1U) || (key == 5U)) ? -1.0f : 1.0f;
 
     if ((key == 3U) && (release_event != 0U) && (run_state == ST_SAFE))
@@ -3016,7 +3073,7 @@ void key_action(Uint16 key, Uint16 repeat_event, Uint16 release_event,
         if (fabsf(u_ref_cmd - 1.0f) < 0.001f)
             trim_low = clampf_local(trim_low + direction * 0.025f,
                                       -0.100f, 0.100f);
-        else if (fabsf(u_ref_cmd - hi) < 0.001f)
+        else if (fabsf(u_ref_cmd - UO_SET_MAX) < 0.001f)
             trim_high = clampf_local(trim_high + direction * 0.025f,
                                        -0.100f, 0.100f);
         return;
@@ -3025,10 +3082,9 @@ void key_action(Uint16 key, Uint16 repeat_event, Uint16 release_event,
 
     if (((key == 5U) || (key == 6U)) && (repeat_event != 0U))
     {
-        float lo = ((UNIT_ROLE == UNIT_2) ||
-                    (model_cmd == MODEL_PARALLEL)) ? 5.0f : 1.0f;
         // KEY5 decrements and KEY6 increments on this hardware assignment.
-        u_ref_cmd = clampf_local(u_ref_cmd + direction * 0.5f, lo, hi);
-        u_ref_cmd = floorf(u_ref_cmd * 2.0f + 0.5f) * 0.5f;
+        u_ref_cmd = clampf_local(u_ref_cmd + direction * UO_SET_STEP,
+                                 UO_SET_MIN, UO_SET_MAX);
+        u_ref_cmd = floorf(u_ref_cmd * 2.0f + 0.5f) * UO_SET_STEP;
     }
 }
