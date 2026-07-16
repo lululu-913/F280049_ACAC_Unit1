@@ -30,7 +30,7 @@
 #define AUX_SHARED_FORMAL              1
 #define AUX_SHARED_LAB_DEBUG           2
 
-#define UNIT_ROLE UNIT_1
+#define UNIT_ROLE UNIT_2
 #define POWER_STAGE_ENABLE          1U
 #define POWER_PROFILE               PROFILE_FULL
 #define HALF_CURRENT_STAGE          HALF_SAFE
@@ -121,28 +121,22 @@
 #define IL_TO_OUTPUT_SIGN              (-1.0f)
 
 //********** ADC 标定参数 (physical = (raw - offset) / gain) **********//
-#define UI_ADC_OFFSET                    2066.2f
-#define UI_ADC_GAIN                      36.443f
-#define UO_ADC_OFFSET                    2067.0f
-#define UO_ADC_GAIN                      36.378f
-#define IL_ADC_OFFSET                    2077.3f
-#define IL_ADC_GAIN                      164.61f
-#define IO_ADC_OFFSET                    2097.6f
-#define IO_ADC_GAIN                      333.10f
-#define IT_ADC_OFFSET                    2081.8f
-#define IT_ADC_GAIN                      162.97f
+// Unit2 传感器标定: raw = gain × physical + offset
+// A0=Ui, A1=Uo, B0=iL, B1=Io
+#define UI_ADC_OFFSET                    2043.6f
+#define UI_ADC_GAIN                      36.499f
+#define UO_ADC_OFFSET                    2047.3f
+#define UO_ADC_GAIN                      36.323f
+#define IL_ADC_OFFSET                    2062.3f
+#define IL_ADC_GAIN                      163.03f
+#define IO_ADC_OFFSET                    2032.1f
+#define IO_ADC_GAIN                      324.40f
 // 极性(Polarity)：#1，取决于差分前端接线方向
 #define UI_ADC_POLARITY                  1.0f
 #define UO_ADC_POLARITY                  1.0f
 #define IL_ADC_POLARITY                  1.0f
 #define IO_ADC_POLARITY                  1.0f
 #define IT_ADC_POLARITY                  1.0f
-
-// ADC 断线/饱和保护：只把接近 12-bit 电源轨的原始码判为无效。
-// 连续 20 个载波周期（1 ms）越界才触发 F09，抑制并机切换时的瞬态干扰。
-#define ADC_RAW_RAIL_MIN                  8U
-#define ADC_RAW_RAIL_MAX                  4087U
-#define ADC_RAIL_BAD_LIMIT                20U
 
 //********** 电压范围与保护阈值 (V) **********//
 #if POWER_PROFILE == PROFILE_HALF
@@ -241,7 +235,7 @@
 #define SHARE_KP                         0.25f
 #define SHARE_KI                         78.5f
 #define DIRECT_VOLTAGE_DUTY_TEST         1U
-#define UO_SET_MIN                      1.0f
+#define UO_SET_MIN                      5.0f
 #define UO_SET_MAX                     35.0f
 #define UO_SET_STEP                     0.5f
 #define DUTY_IO_FF_GAIN                 0.002f
@@ -313,9 +307,6 @@ typedef struct
     float cos_theta;
     float sin_dtheta;
     float cos_dtheta;
-    float dtheta_pending;
-    float sin_dtheta_pending;
-    float cos_dtheta_pending;
 } SinglePhasePll;
 
 typedef struct
@@ -424,10 +415,6 @@ volatile Uint32 debug_reset_cause = 0UL;
 volatile Uint16 debug_last_isr_ticks = 0U;
 volatile Uint16 debug_max_isr_ticks = 0U;
 volatile Uint16 debug_adc_ovf_count = 0U;
-volatile Uint16 debug_isr_slot = 0U;
-volatile Uint16 debug_adc_ovf_slot = 0U;
-volatile Uint16 debug_dead_bus_block = 0U;
-volatile Uint16 debug_dead_bus_limit_mA = 300U;
 
 float u_ref_cmd = UO_DEFAULT;
 float u_ref_active = 0.0f;
@@ -442,7 +429,6 @@ float il_ref = 0.0f;
 float il_ref_prev = 0.0f;
 float it_fund_rms = 0.0f;
 float io_fund_rms = 0.0f;
-float io2_fund_rms = 0.0f;
 float share_error_pct = 0.0f;
 float iconv_ref_held = 0.0f;
 float iconv_ref_target = 0.0f;
@@ -516,25 +502,6 @@ extern Uint16 RamfuncsRunStart;
 extern Uint16 RamfuncsLoadSize;
 #endif
 
-// 将每个20 kHz周期都执行的计算热点放入RAM。慢速数学函数已通过载波分槽
-// 控制峰值预算，保留在Flash，避免挤占有限的RAMLS0。
-#ifdef _FLASH
-#pragma CODE_SECTION(is_voltage_role, ".TI.ramfunc")
-#pragma CODE_SECTION(share_signal_processing_active, ".TI.ramfunc")
-#pragma CODE_SECTION(clampf_local, ".TI.ramfunc")
-#pragma CODE_SECTION(slew, ".TI.ramfunc")
-#pragma CODE_SECTION(sogi_update, ".TI.ramfunc")
-#pragma CODE_SECTION(pll_update_fast, ".TI.ramfunc")
-#pragma CODE_SECTION(rms_update_fast, ".TI.ramfunc")
-#pragma CODE_SECTION(mean_update_fast, ".TI.ramfunc")
-#pragma CODE_SECTION(pi_reset, ".TI.ramfunc")
-#pragma CODE_SECTION(dq_lpf_update, ".TI.ramfunc")
-#pragma CODE_SECTION(adcB1ISR, ".TI.ramfunc")
-#pragma CODE_SECTION(sample_and_calibrate, ".TI.ramfunc")
-#pragma CODE_SECTION(signal_processing_fast, ".TI.ramfunc")
-#pragma CODE_SECTION(control_update_fast, ".TI.ramfunc")
-#endif
-
 //********** 函数声明 **********//
 __interrupt void adcB1ISR(void);
 void hardware_init(void);
@@ -562,13 +529,7 @@ void gate_sequence_update(void);
 void request_half_change(HalfPolarity next_half);
 void sample_and_calibrate(void);
 void signal_processing_fast(void);
-void signal_processing_it_dq_publish_slow(void);
-void signal_processing_io_dq_publish_slow(void);
-void signal_processing_io2_dq_publish_slow(void);
-void signal_processing_il_publish_slow(void);
-void signal_processing_io_publish_slow(void);
-void signal_processing_it_publish_slow(void);
-void signal_processing_voltage_publish_slow(void);
+void signal_processing_slow(void);
 void software_protection_fast(void);
 void software_protection_slow(void);
 void control_update_fast(void);
@@ -583,8 +544,6 @@ void latch_fault(FaultCode fault);
 Uint16 fault_clear_conditions(void);
 Uint16 is_voltage_role(void);
 Uint16 is_share_role(void);
-Uint16 share_signal_processing_active(void);
-void reset_share_signal_processing(void);
 Uint16 model_is_legal(Uint16 model);
 Uint16 dead_bus(void);
 Uint16 input_start_ok(void);
@@ -597,12 +556,7 @@ float slew(float x, float target, float step);
 float wrap_pi(float x);
 void sogi_update(SogiState *s, float input, float omega);
 void pll_update_fast(SinglePhasePll *pll, float input, float amp_min);
-void pll_slow_amplitude_update(SinglePhasePll *pll, float amp_min);
-void pll_slow_normalize_update(SinglePhasePll *pll);
-void pll_slow_theta_update(SinglePhasePll *pll);
-void pll_slow_sin_dtheta_update(SinglePhasePll *pll);
-void pll_slow_cos_dtheta_update(SinglePhasePll *pll);
-void pll_slow_commit_dtheta_update(SinglePhasePll *pll);
+void pll_slow_update(SinglePhasePll *pll, float amp_min);
 void rms_update_fast(SlidingRms *r, float x);
 void rms_slow_update(SlidingRms *r);
 void mean_update_fast(SlidingRms *r, float x);
@@ -721,12 +675,8 @@ void oled_update_one_line(void)
     if (oled_line == 0U)
     {
         put_text(line, 0U, profile_text());
-#if UNIT_ROLE == UNIT_1
-        put_text(line, 6U, (model == MODEL_PARALLEL) ? "M2SH" :
-                            ((model == MODEL_VOLTAGE) ? "M1VC" : "M0--"));
-#else
-        put_text(line, 6U, (model == MODEL_PARALLEL) ? "M2VC" : "M0--");
-#endif
+        put_text(line, 6U, (model == MODEL_PARALLEL) ? "M2VC" :
+                            ((model == MODEL_VOLTAGE) ? "M1--" : "M0--"));
         put_text(line, 11U, state_text(run_state));
     }
     else if (oled_line == 1U)
@@ -796,20 +746,14 @@ Uint16 fault_clear_conditions(void)
 {
     // 故障清除必须同时满足：ADC 原始码有效、母线已放电、CMPSS 未动作、
     // 电流低于恢复阈值，并连续保持 100 ms；否则继续保持 OST。
-    Uint16 raw_ok = ((meas.raw_ui >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_ui <= ADC_RAW_RAIL_MAX) &&
-                     (meas.raw_uo >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_uo <= ADC_RAW_RAIL_MAX) &&
-                     (meas.raw_il >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_il <= ADC_RAW_RAIL_MAX) &&
-                     (meas.raw_io >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_io <= ADC_RAW_RAIL_MAX));
+    Uint16 raw_ok = ((meas.raw_ui >= 64U) && (meas.raw_ui <= 4031U) &&
+                     (meas.raw_uo >= 64U) && (meas.raw_uo <= 4031U) &&
+                     (meas.raw_il >= 64U) && (meas.raw_il <= 4031U) &&
+                     (meas.raw_io >= 64U) && (meas.raw_io <= 4031U));
     Uint16 comparator_active;
 #if UNIT_ROLE == UNIT_1
-    raw_ok = raw_ok && (meas.raw_it >= ADC_RAW_RAIL_MIN) &&
-             (meas.raw_it <= ADC_RAW_RAIL_MAX);
+    raw_ok = raw_ok && (meas.raw_it >= 64U) && (meas.raw_it <= 4031U);
 #endif
-
     if (!raw_ok || !dead_bus() ||
         (fabsf(meas.il) > 0.8f * IL_CMPSS_TRIP))
     {
@@ -851,95 +795,32 @@ Uint16 fault_clear_conditions(void)
 
 Uint16 is_voltage_role(void)
 {
-#if UNIT_ROLE == UNIT_1
-    return (model_active == MODEL_VOLTAGE) ? 1U : 0U;
-#else
     return (model_active == MODEL_PARALLEL) ? 1U : 0U;
-#endif
 }
 
 Uint16 is_share_role(void)
 {
-#if UNIT_ROLE == UNIT_1
-    return (model_active == MODEL_PARALLEL) ? 1U : 0U;
-#else
     return 0U;
-#endif
-}
-
-Uint16 share_signal_processing_active(void)
-{
-#if UNIT_ROLE == UNIT_1
-    if (model_active != MODEL_PARALLEL) return 0U;
-    return ((run_state == ST_OUTPUT_PLL) ||
-            (run_state == ST_SHARE_RAMP) ||
-            (run_state == ST_RUN) ||
-            (run_state == ST_STOP_RAMP)) ? 1U : 0U;
-#else
-    return 0U;
-#endif
-}
-
-void reset_share_signal_processing(void)
-{
-    // WAIT期间输出PLL处理已停用；清除全部历史，确保母线重新出现后必须
-    // 从零开始满足100 ms锁定资格，不能沿用上一次的locked/theta/dq。
-    memset(&pll_uo, 0, sizeof(pll_uo));
-    memset(&it_dq, 0, sizeof(it_dq));
-    memset(&io_dq, 0, sizeof(io_dq));
-    memset(&rms_it, 0, sizeof(rms_it));
-
-    pll_uo.omega = TWO_PI_F * 50.0f;
-    pll_uo.cos_theta = 1.0f;
-    pll_uo.sin_theta = 0.0f;
-    pll_uo.sin_dtheta = 0.0157073f;
-    pll_uo.cos_dtheta = 0.9998766f;
-    pll_uo.sin_dtheta_pending = pll_uo.sin_dtheta;
-    pll_uo.cos_dtheta_pending = pll_uo.cos_dtheta;
-    pll_uo.amplitude_published = 2.0f;
-
-    it_fund_rms = 0.0f;
-    io_fund_rms = 0.0f;
-    io2_fund_rms = 0.0f;
-    meas.it_rms = 0.0f;
 }
 
 Uint16 model_is_legal(Uint16 model)
 {
-#if UNIT_ROLE == UNIT_1
-    return ((model == MODEL_SAFE) || (model == MODEL_VOLTAGE) ||
-            (model == MODEL_PARALLEL)) ? 1U : 0U;
-#else
     return ((model == MODEL_SAFE) || (model == MODEL_PARALLEL)) ? 1U : 0U;
-#endif
 }
 
 Uint16 dead_bus(void)
 {
-    // Uo 负责判断母线已放电；iL/Io 给传感器零点噪声保留 0.30 A 裕量。
-    // debug_dead_bus_block: 0=通过，1=Uo，2=iL，3=Io。
+    // 用 Uo、iL、Io 的 RMS 同时接近零判断母线已安全放电，连续 100 ms 才有效。
     Uint16 count = dead_bus_count;
-    if (meas.uo_rms >= 2.0f)
+    Uint16 now = ((meas.uo_rms < 2.0f) && (meas.il_rms < 0.30f) &&
+                  (meas.io_rms < 0.30f));
+    if (now)
     {
-        debug_dead_bus_block = 1U;
-        count = 0U;
-    }
-    else if (meas.il_rms >= 0.30f)
-    {
-        debug_dead_bus_block = 2U;
-        count = 0U;
-    }
-    else if (meas.io_rms >= 0.30f)
-    {
-        debug_dead_bus_block = 3U;
-        count = 0U;
-    }
-    else
-    {
-        debug_dead_bus_block = 0U;
         if (count < 100U) count++;
     }
+    else count = 0U;
     dead_bus_count = count;
+    return (count >= 100U) ? 1U : 0U;
     return (count >= 100U) ? 1U : 0U;
 }
 
@@ -969,18 +850,6 @@ Uint16 predicted_zero(void)
     Uint16 ui_zero = ((fabsf(pll_ui.sogi.alpha) < 1.5f) &&
                       (distance < 2.0f * PI_F / 180.0f)) ? 1U : 0U;
     if (ui_zero == 0U) return 0U;
-#if UNIT_ROLE == UNIT_1
-    if (is_share_role() != 0U)
-    {
-        float out_phase = wrap_pi(pll_uo.theta);
-        float oa = fabsf(out_phase);
-        float ob = fabsf(oa - PI_F);
-        float out_distance = (oa < ob) ? oa : ob;
-        return ((fabsf(pll_uo.sogi.alpha) < 1.5f) &&
-                (out_distance < 2.0f * PI_F / 180.0f) &&
-                (pll_uo.locked != 0U)) ? 1U : 0U;
-    }
-#endif
     return ui_zero;
 }
 
@@ -988,24 +857,11 @@ float effective_u_ref(void)
 {
     // 将按键设定值叠加低端/高端 ±25 mV 微调；普通电压档保持 0.5 V 步进。
     if (DIRECTION_DIAG_8V) return 1.0f;
-#if UNIT_ROLE == UNIT_1
-    if (model_cmd == MODEL_VOLTAGE || model_active == MODEL_VOLTAGE)
-    {
-        if (fabsf(u_ref_cmd - 1.0f) < 0.001f)
-            return u_ref_cmd + trim_low;
-        if (fabsf(u_ref_cmd - UO_SINGLE_MAX) < 0.001f)
-            return u_ref_cmd + trim_high;
-    }
-#endif
     return u_ref_cmd;
 }
 
 float active_u_max(void)
 {
-#if UNIT_ROLE == UNIT_1
-    if ((model_cmd == MODEL_VOLTAGE) || (model_active == MODEL_VOLTAGE))
-        return UO_SINGLE_MAX;
-#endif
     return UO_PARALLEL_MAX;
 }
 
@@ -1092,14 +948,39 @@ void pll_update_fast(SinglePhasePll *pll, float input, float amp_min)
     pll->cos_theta = cs_new;
 }
 
-void pll_slow_amplitude_update(SinglePhasePll *pll, float amp_min)
+void pll_slow_update(SinglePhasePll *pll, float amp_min)
 {
-    // 每毫秒只在本槽执行一次幅值开方，并在同一处更新锁定资格。
-    float amplitude = sqrtf(pll->sogi.alpha * pll->sogi.alpha +
-                            pll->sogi.beta * pll->sogi.beta);
+    // 1 kHz 慢速路径：幅值开方、正交状态归一化、重新计算相位增量、锁定判断。
+    // 归一化抑制 20 步浮点递推的数值漂移，保证长期正交性。
+    float mag;
+    float dtheta;
+    float amplitude;
+
+    amplitude = sqrtf(pll->sogi.alpha * pll->sogi.alpha +
+                      pll->sogi.beta * pll->sogi.beta);
     pll->amplitude = amplitude;
     pll->amplitude_published = amplitude;
 
+    // 正交状态归一化
+    mag = sqrtf(pll->sin_theta * pll->sin_theta +
+                pll->cos_theta * pll->cos_theta);
+    if (mag > 1e-9f)
+    {
+        pll->sin_theta /= mag;
+        pll->cos_theta /= mag;
+    }
+
+    // 同步 theta：用归一化后的 sin_theta/cos_theta 重建相位角，
+    // 消除简单累加与正交递推之间的数值漂移。1 kHz 执行，成本可接受。
+    pll->theta = atan2f(pll->sin_theta, pll->cos_theta);
+    if (pll->theta < 0.0f) pll->theta += TWO_PI_F;
+
+    // 根据当前频率重新计算相位增量
+    dtheta = pll->omega * CONTROL_TS;
+    pll->sin_dtheta = sinf(dtheta);
+    pll->cos_dtheta = cosf(dtheta);
+
+    // 锁定条件：幅值达标、相位误差 < 0.05、频率在 48~52 Hz
     if ((amplitude >= amp_min) && (fabsf(pll->q_norm) < 0.05f) &&
         (pll->omega >= TWO_PI_F * 48.0f) &&
         (pll->omega <= TWO_PI_F * 52.0f))
@@ -1108,44 +989,6 @@ void pll_slow_amplitude_update(SinglePhasePll *pll, float amp_min)
     }
     else pll->lock_samples = 0UL;
     pll->locked = (pll->lock_samples >= 100UL) ? 1U : 0U;
-}
-
-void pll_slow_normalize_update(SinglePhasePll *pll)
-{
-    // 正交状态归一化单独占用一个载波槽，避免与其他数学库调用叠加。
-    float mag = sqrtf(pll->sin_theta * pll->sin_theta +
-                      pll->cos_theta * pll->cos_theta);
-    if (mag > 1e-9f)
-    {
-        pll->sin_theta /= mag;
-        pll->cos_theta /= mag;
-    }
-}
-
-void pll_slow_theta_update(SinglePhasePll *pll)
-{
-    // atan2f 单独占用一个载波槽，同步递推正交状态与显式 theta。
-    pll->theta = atan2f(pll->sin_theta, pll->cos_theta);
-    if (pll->theta < 0.0f) pll->theta += TWO_PI_F;
-}
-
-void pll_slow_sin_dtheta_update(SinglePhasePll *pll)
-{
-    // sin/cos 共用同一份相位步长快照，但分别放在不同载波槽。
-    pll->dtheta_pending = pll->omega * CONTROL_TS;
-    pll->sin_dtheta_pending = sinf(pll->dtheta_pending);
-}
-
-void pll_slow_cos_dtheta_update(SinglePhasePll *pll)
-{
-    pll->cos_dtheta_pending = cosf(pll->dtheta_pending);
-}
-
-void pll_slow_commit_dtheta_update(SinglePhasePll *pll)
-{
-    // sin/cos均完成后一次性切换，避免快速路径短暂使用不配对的旋转系数。
-    pll->sin_dtheta = pll->sin_dtheta_pending;
-    pll->cos_dtheta = pll->cos_dtheta_pending;
 }
 
 void rms_update_fast(SlidingRms *r, float x)
@@ -1727,16 +1570,12 @@ void controllers_init(void)
     pll_ui.sin_theta = 0.0f;
     pll_ui.sin_dtheta = 0.0157073f;
     pll_ui.cos_dtheta = 0.9998766f;
-    pll_ui.sin_dtheta_pending = pll_ui.sin_dtheta;
-    pll_ui.cos_dtheta_pending = pll_ui.cos_dtheta;
     pll_ui.amplitude_published = 5.0f;
     pll_uo.omega = TWO_PI_F * 50.0f;
     pll_uo.cos_theta = 1.0f;
     pll_uo.sin_theta = 0.0f;
     pll_uo.sin_dtheta = 0.0157073f;
     pll_uo.cos_dtheta = 0.9998766f;
-    pll_uo.sin_dtheta_pending = pll_uo.sin_dtheta;
-    pll_uo.cos_dtheta_pending = pll_uo.cos_dtheta;
     pll_uo.amplitude_published = 5.0f;
     pi_id.kp = CURRENT_KP;
     pi_id.ki = CURRENT_LOOP_INTEGRAL_ENABLE ? CURRENT_KI : 0.0f;
@@ -1791,14 +1630,10 @@ void pwm_force_off(void)
 Uint16 trip_clear_qualify_fast(void)
 {
 #if POWER_STAGE_ENABLE == 1
-    Uint16 raw_ok = ((meas.raw_ui >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_ui <= ADC_RAW_RAIL_MAX) &&
-                     (meas.raw_uo >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_uo <= ADC_RAW_RAIL_MAX) &&
-                     (meas.raw_il >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_il <= ADC_RAW_RAIL_MAX) &&
-                     (meas.raw_io >= ADC_RAW_RAIL_MIN) &&
-                     (meas.raw_io <= ADC_RAW_RAIL_MAX));
+    Uint16 raw_ok = ((meas.raw_ui >= 64U) && (meas.raw_ui <= 4031U) &&
+                     (meas.raw_uo >= 64U) && (meas.raw_uo <= 4031U) &&
+                     (meas.raw_il >= 64U) && (meas.raw_il <= 4031U) &&
+                     (meas.raw_io >= 64U) && (meas.raw_io <= 4031U));
     Uint16 cmp_ok = (CMPSS_getStatus(CMPSS7_BASE) &
                      (CMPSS_STS_HI_FILTOUT | CMPSS_STS_LO_FILTOUT)) == 0U;
     if (!raw_ok || !cmp_ok || (fabsf(meas.il) > 0.8f * IL_CMPSS_TRIP) ||
@@ -2025,12 +1860,11 @@ void signal_processing_fast(void)
     // 20 kHz 快速路径：SOGI 更新、PLL 相位/频率递推、dq 投影、RMS 滑动窗累加。
     // 不使用 sinf/cosf/sqrtf；dq 变换复用 PLL 缓存的正交状态。
     float ui_amp_min = DIRECTION_DIAG_8V ? 2.0f : 5.0f;
-    Uint16 share_active = share_signal_processing_active();
 
     pll_update_fast(&pll_ui, meas.ui, ui_amp_min);
     sogi_update(&uo_observer, meas.uo, pll_ui.omega);
 
-    if (share_active != 0U)
+    if (is_share_role() != 0U)
     {
         pll_update_fast(&pll_uo, meas.uo, 2.0f);
         dq_lpf_update(&it_dq, meas.it, pll_uo.sin_theta, pll_uo.cos_theta);
@@ -2039,100 +1873,65 @@ void signal_processing_fast(void)
 
     rms_update_fast(&rms_il, meas.il);
     rms_update_fast(&rms_io, meas.io);
-    if (share_active != 0U)
+    if (is_share_role() != 0U)
         rms_update_fast(&rms_it, meas.it);
     mean_update_fast(&rms_uo, meas.uo);
 }
 
-void signal_processing_it_dq_publish_slow(void)
+void signal_processing_slow(void)
 {
-    if (share_signal_processing_active() != 0U)
+    // 1 kHz 慢速路径：PLL 幅值/锁定/归一化/Δθ 重算、dq 基波 RMS 发布、
+    // RMS/均值发布、uo_observer 幅值发布。
+    float ui_amp_min = DIRECTION_DIAG_8V ? 2.0f : 5.0f;
+
+    pll_slow_update(&pll_ui, ui_amp_min);
+
+    if (is_share_role() != 0U)
+    {
+        pll_slow_update(&pll_uo, 2.0f);
         it_fund_rms = sqrtf(it_dq.d * it_dq.d +
-                            it_dq.q * it_dq.q) * INV_SQRT2_F;
-    else
-        it_fund_rms = 0.0f;
-}
-
-void signal_processing_io_dq_publish_slow(void)
-{
-    if (share_signal_processing_active() != 0U)
+                              it_dq.q * it_dq.q) * INV_SQRT2_F;
         io_fund_rms = sqrtf(io_dq.d * io_dq.d +
-                            io_dq.q * io_dq.q) * INV_SQRT2_F;
-    else
-        io_fund_rms = 0.0f;
-}
-
-void signal_processing_io2_dq_publish_slow(void)
-{
-    if (share_signal_processing_active() != 0U)
-    {
-        float io2_d = it_dq.d - io_dq.d;
-        float io2_q = it_dq.q - io_dq.q;
-        io2_fund_rms = sqrtf(io2_d * io2_d + io2_q * io2_q) *
-                       INV_SQRT2_F;
+                              io_dq.q * io_dq.q) * INV_SQRT2_F;
     }
-    else
-        io2_fund_rms = 0.0f;
-}
 
-void signal_processing_il_publish_slow(void)
-{
     rms_slow_update(&rms_il);
-    meas.il_rms = rms_il.rms;
-    meas.il_mean = rms_il.mean;
-}
-
-void signal_processing_io_publish_slow(void)
-{
     rms_slow_update(&rms_io);
-    meas.io_rms = rms_io.rms;
-}
-
-void signal_processing_it_publish_slow(void)
-{
-    if (share_signal_processing_active() != 0U)
-    {
+    if (is_share_role() != 0U)
         rms_slow_update(&rms_it);
-        meas.it_rms = rms_it.rms;
-    }
-    else
-        meas.it_rms = 0.0f;
-}
-
-void signal_processing_voltage_publish_slow(void)
-{
-    // 本槽只有 Uo 幅值一次开方；均值发布不调用数学库。
     mean_slow_update(&rms_uo);
+
     meas.ui_rms = pll_ui.amplitude * INV_SQRT2_F;
     meas.uo_rms = sqrtf(uo_observer.alpha * uo_observer.alpha +
-                        uo_observer.beta * uo_observer.beta) * INV_SQRT2_F;
-    uo_amp_held = SQRT2_F * meas.uo_rms;
+                          uo_observer.beta * uo_observer.beta) * INV_SQRT2_F;
+    meas.il_rms = rms_il.rms;
+    meas.io_rms = rms_io.rms;
+    meas.it_rms = (is_share_role() != 0U) ? rms_it.rms : 0.0f;
+    meas.il_mean = rms_il.mean;
     meas.uo_mean = rms_uo.mean;
 }
 
 void software_protection_fast(void)
 {
-    // 20 kHz 快速路径：ADC 越界、CMPSS 状态以及 iL/Io/It/Uo 瞬时峰值。
+    // 20 kHz 快速路径：ADC 越界、CMPSS 状态以及 iL/Io/Uo 瞬时峰值。
     Uint16 raw_bad;
     Uint16 protection_active;
 
-    raw_bad = ((meas.raw_ui < ADC_RAW_RAIL_MIN) ||
-               (meas.raw_ui > ADC_RAW_RAIL_MAX) ||
-               (meas.raw_uo < ADC_RAW_RAIL_MIN) ||
-               (meas.raw_uo > ADC_RAW_RAIL_MAX) ||
-               (meas.raw_il < ADC_RAW_RAIL_MIN) ||
-               (meas.raw_il > ADC_RAW_RAIL_MAX) ||
-               (meas.raw_io < ADC_RAW_RAIL_MIN) ||
-               (meas.raw_io > ADC_RAW_RAIL_MAX)) ? 1U : 0U;
+    raw_bad = ((meas.raw_ui < 32U) || (meas.raw_ui > 4063U) ||
+               (meas.raw_uo < 32U) || (meas.raw_uo > 4063U) ||
+               (meas.raw_il < 32U) || (meas.raw_il > 4063U) ||
+               (meas.raw_io < 32U) || (meas.raw_io > 4063U)) ? 1U : 0U;
 #if UNIT_ROLE == UNIT_1
-    if ((meas.raw_it < ADC_RAW_RAIL_MIN) ||
-        (meas.raw_it > ADC_RAW_RAIL_MAX)) raw_bad = 1U;
+    if ((meas.raw_it < 32U) || (meas.raw_it > 4063U)) raw_bad = 1U;
 #endif
     if (raw_bad != 0U)
     {
-        if (++adc_bad_count >= ADC_RAIL_BAD_LIMIT) latch_fault(FAULT_ADC);
+        if (++adc_bad_count >= 3U) latch_fault(FAULT_ADC);
     }
-    else adc_bad_count = 0U;
+    else
+    {
+        adc_bad_count = 0U;
+    }
 
 #if DIAG_DISABLE_CMPSS_TRIP == 0U
     if ((EPwm1Regs.TZFLG.bit.DCAEVT1 != 0U) ||
@@ -2158,13 +1957,12 @@ void software_protection_fast(void)
     {
         il_fast_count = 0U;
         io_pk_count = 0U;
-        it_pk_count = 0U;
         uo_pk_count = 0U;
         return;
     }
 
 #if DIAG_DISABLE_IL_SW_TRIP == 0U
-    // iL 瞬时峰值单采样锁存；其余支路峰值按设计连续确认以抑制毛刺。
+    // iL 瞬时峰值单采样锁存；Io/Uo按设计连续确认以抑制毛刺。
     if (fabsf(meas.il) >= IL_SW_FAST_LIMIT)
     {
         debug_il_fault_source = 4U;
@@ -2178,14 +1976,6 @@ void software_protection_fast(void)
         if (++io_pk_count >= 5U) latch_fault(FAULT_IO);
     }
     else io_pk_count = 0U;
-
-#if UNIT_ROLE == UNIT_1
-    if (fabsf(meas.it) >= IT_PK_TRIP)
-    {
-        if (++it_pk_count >= 5U) latch_fault(FAULT_IT);
-    }
-    else it_pk_count = 0U;
-#endif
 
     if (fabsf(meas.uo) >= UO_ABS_PK_TRIP)
     {
@@ -2324,14 +2114,12 @@ __interrupt void adcB1ISR(void)
     software_protection_fast();
     trip_clear_qualify_fast();
 
-    // ---- 1 kHz 慢速路径：每个载波槽最多安排一个重型数学调用 ----
+    // ---- 1 kHz 慢速路径：分散到不同载波周期，避免叠加 ----
     isr_heartbeat++;
-    debug_isr_slot = sample_div;
-    switch (debug_isr_slot)
+    switch (sample_div)
     {
         case 0U:
-            pll_slow_amplitude_update(&pll_ui,
-                                      DIRECTION_DIAG_8V ? 2.0f : 5.0f);
+            signal_processing_slow();
             if (tick_1ms < 100U) tick_1ms++;
             if (++tick_div_5ms >= 5U) {
                 tick_div_5ms = 0U;
@@ -2342,70 +2130,11 @@ __interrupt void adcB1ISR(void)
                 if (tick_100ms < 4U) tick_100ms++;
             }
             break;
-        case 1U:
-            if (share_signal_processing_active() != 0U)
-                pll_slow_amplitude_update(&pll_uo, 2.0f);
-            break;
-        case 2U:
-            pll_slow_normalize_update(&pll_ui);
-            break;
-        case 3U:
-            if (share_signal_processing_active() != 0U)
-                pll_slow_normalize_update(&pll_uo);
-            break;
-        case 4U:
-            pll_slow_theta_update(&pll_ui);
-            break;
-        case 5U:
-            if (share_signal_processing_active() != 0U)
-                pll_slow_theta_update(&pll_uo);
-            break;
         case 6U:
             software_protection_slow();
             break;
-        case 7U:
-            pll_slow_sin_dtheta_update(&pll_ui);
-            break;
-        case 8U:
-            if (share_signal_processing_active() != 0U)
-                pll_slow_sin_dtheta_update(&pll_uo);
-            break;
-        case 9U:
-            pll_slow_cos_dtheta_update(&pll_ui);
-            break;
-        case 10U:
-            if (share_signal_processing_active() != 0U)
-                pll_slow_cos_dtheta_update(&pll_uo);
-            break;
-        case 11U:
-            signal_processing_it_dq_publish_slow();
-            break;
         case 12U:
-            signal_processing_io_dq_publish_slow();
-            break;
-        case 13U:
-            signal_processing_io2_dq_publish_slow();
-            break;
-        case 14U:
             control_update_slow();
-            break;
-        case 15U:
-            signal_processing_il_publish_slow();
-            break;
-        case 16U:
-            signal_processing_io_publish_slow();
-            break;
-        case 17U:
-            signal_processing_it_publish_slow();
-            break;
-        case 18U:
-            signal_processing_voltage_publish_slow();
-            break;
-        case 19U:
-            // 无数学库调用：一次性提交两套PLL的新旋转系数。
-            pll_slow_commit_dtheta_update(&pll_ui);
-            if (share_signal_processing_active() != 0U)
-                pll_slow_commit_dtheta_update(&pll_uo);
             break;
         default:
             break;
@@ -2413,18 +2142,14 @@ __interrupt void adcB1ISR(void)
     if (++sample_div >= 20U) sample_div = 0U;
 
     // ---- 20 kHz 快速路径（续）：电流内环 + 门极 shadow 提交 ----
-    if (run_state != ST_FAULT)
-    {
-        control_update_fast();
-        gate_sequence_update();
-    }
+    control_update_fast();
+    gate_sequence_update();
 
     // ADCINT 溢出检查：ADCB EOC2 触发，检查 ADCB 的溢出标志。
     AdcbRegs.ADCINTFLGCLR.bit.ADCINT1 = 1U;
     if (AdcbRegs.ADCINTOVF.bit.ADCINT1 != 0U)
     {
         debug_adc_ovf_count++;
-        debug_adc_ovf_slot = debug_isr_slot;
         AdcbRegs.ADCINTOVFCLR.bit.ADCINT1 = 1U;
         AdcbRegs.ADCINTFLGCLR.bit.ADCINT1 = 1U;
         latch_fault(FAULT_CPU);
@@ -2443,15 +2168,17 @@ void control_update_slow(void)
     // 1 kHz 慢速路径：dq 变换、电压/分流外环 PI、Co 电流前馈。
     // 结果 iconv_ref_held / dff_held 保持 20 个快速周期供电流内环使用。
     // sin/cos 复用 PLL 缓存的正交状态，不调用 sinf/cosf。
-#if !DIRECT_VOLTAGE_DUTY_TEST
     float sn = pll_ui.sin_theta;
     float cs = pll_ui.cos_theta;
-#endif
     float ui_amp = fmaxf(pll_ui.amplitude, 1.0f);
-    float uo_amp = uo_amp_held;
+    float uo_amp;
     float dff;
     float iconv_ref = 0.0f;
     Uint16 ctrl_active;
+
+    uo_amp = sqrtf(uo_observer.alpha * uo_observer.alpha +
+                   uo_observer.beta * uo_observer.beta);
+    uo_amp_held = uo_amp;
 
     // 稳压角色使用目标电压计算前馈占空比，避免实际 Uo 超调后前馈增大
     // 形成正反馈维持过高输出。
@@ -2478,9 +2205,7 @@ void control_update_slow(void)
     // 稳压角色
     if (is_voltage_role() != 0U)
     {
-#if !DIRECT_VOLTAGE_DUTY_TEST
         float target_u = SQRT2_F * u_ref_active;
-#endif
 
 #if DIRECT_VOLTAGE_DUTY_TEST
 
@@ -2575,6 +2300,9 @@ void control_update_slow(void)
         float target_q;
         float corr_d;
         float corr_q;
+        float io2_d;
+        float io2_q;
+        float io2_rms;
         float k_meas;
 
         kmin_safe = fmaxf(0.5f, it_rms / I_BRANCH_CMD_MAX - 1.0f);
@@ -2606,7 +2334,10 @@ void control_update_slow(void)
                     CO_FARAD * uo_observer.dalpha +
                     corr_d * so + corr_q * co;
 
-        k_meas = io_fund_rms / fmaxf(io2_fund_rms, 0.02f);
+        io2_d = it_dq.d - io_dq.d;
+        io2_q = it_dq.q - io_dq.q;
+        io2_rms = sqrtf(io2_d * io2_d + io2_q * io2_q) * INV_SQRT2_F;
+        k_meas = io_fund_rms / fmaxf(io2_rms, 0.02f);
         share_error_pct = 100.0f * fabsf(k_active - k_meas) /
                             fmaxf(k_active, 0.01f);
     }
@@ -2667,56 +2398,55 @@ void control_update_fast(void)
                                  IL_REF_PK_MAX);
 #if DIRECT_VOLTAGE_DUTY_TEST
 
-    if (is_voltage_role() != 0U)
-    {
-        /*
-         * 直接电压控制只用于稳压角色调试。Unit1 Model2 是分流角色，
-         * 必须继续执行下方的电流内环，不能被该调试开关旁路。
-         */
-        duty = slew(duty, direct_duty_target, 0.0002f);
-        duty = clampf_local(duty, PWM_D_MIN, PWM_D_MAX);
+    /*
+     * 直接电压控制模式：
+     * 以有限斜率跟踪慢速外环给出的占空比。
+     * 0.0003f/次 @ 20 kHz -> 每毫秒约0.6个百分点。
+     */
+    duty = slew(duty, direct_duty_target, 0.0002f);
+    duty = clampf_local(duty, PWM_D_MIN, PWM_D_MAX);
 
-        /* 稳压角色调试时电流参考和电流PI退出控制 */
-        il_ref = 0.0f;
-        il_ref_prev = 0.0f;
-        il_ref_target = 0.0f;
-        pi_reset(&pi_id);
+    /* 电流参考和电流PI退出控制 */
+    il_ref = 0.0f;
+    il_ref_prev = 0.0f;
+    il_ref_target = 0.0f;
+    pi_reset(&pi_id);
+
+#else
+
+    il_ref = slew(il_ref_prev, il_ref_target, 0.125f);
+    il_ref_dot = (il_ref - il_ref_prev) / CONTROL_TS;
+    il_ref_prev = il_ref;
+
+    if (ctrl_active != 0U)
+    {
+        error = il_ref - meas.il;
+        v_pi = CURRENT_KP * error + pi_id.integral;
+        denom = fabsf(meas.ui) + fabsf(meas.uo);
+        if (denom < 10.0f) denom = 10.0f;
+        qsign = (half == HALF_POS) ? 1.0f : -1.0f;
+        d_unsat = dff + qsign * (L_HENRY * il_ref_dot + v_pi) / denom;
+        duty = clampf_local(d_unsat, PWM_D_MIN, PWM_D_MAX);
+
+        if (((d_unsat >= PWM_D_MIN) && (d_unsat <= PWM_D_MAX)) ||
+            ((d_unsat > PWM_D_MAX) && (qsign * error < 0.0f)) ||
+            ((d_unsat < PWM_D_MIN) && (qsign * error > 0.0f)))
+        {
+            pi_id.integral += pi_id.ki * CONTROL_TS * error;
+            pi_id.integral = clampf_local(pi_id.integral, -5.0f, 5.0f);
+        }
     }
     else
-#endif
     {
-        il_ref = slew(il_ref_prev, il_ref_target, 0.125f);
-        il_ref_dot = (il_ref - il_ref_prev) / CONTROL_TS;
-        il_ref_prev = il_ref;
-
-        if (ctrl_active != 0U)
-        {
-            error = il_ref - meas.il;
-            v_pi = CURRENT_KP * error + pi_id.integral;
-            denom = fabsf(meas.ui) + fabsf(meas.uo);
-            if (denom < 10.0f) denom = 10.0f;
-            qsign = (half == HALF_POS) ? 1.0f : -1.0f;
-            d_unsat = dff + qsign * (L_HENRY * il_ref_dot + v_pi) / denom;
-            duty = clampf_local(d_unsat, PWM_D_MIN, PWM_D_MAX);
-
-            if (((d_unsat >= PWM_D_MIN) && (d_unsat <= PWM_D_MAX)) ||
-                ((d_unsat > PWM_D_MAX) && (qsign * error < 0.0f)) ||
-                ((d_unsat < PWM_D_MIN) && (qsign * error > 0.0f)))
-            {
-                pi_id.integral += pi_id.ki * CONTROL_TS * error;
-                pi_id.integral = clampf_local(pi_id.integral, -5.0f, 5.0f);
-            }
-        }
-        else
-        {
 #if GATE_OPEN_LOOP_TEST
-            duty = (run_state == ST_GATE_TEST) ? OPEN_LOOP_DUTY : dff;
+        duty = (run_state == ST_GATE_TEST) ? OPEN_LOOP_DUTY : dff;
 #else
-            duty = dff;
+        duty = dff;
 #endif
-            pi_reset(&pi_id);
-        }
+        pi_reset(&pi_id);
     }
+
+#endif
 
     // ---- 半周换向：带进入/退出迟滞 + 预测补偿 + 过零电流收缩 ----
     // 进入零区不立即换向，明确离开零区时才切换。
@@ -2727,7 +2457,7 @@ void control_update_fast(void)
         float alpha_zc;
         float zc_abs;
         float zc_scale;
-         Uint16 request_pos = 0U;
+        Uint16 request_pos = 0U;
         Uint16 request_neg = 0U;
 
         alpha_now = pll_ui.sogi.alpha;
@@ -2972,20 +2702,16 @@ void slow_state_machine_1ms(void)
             break;
 
         case ST_INPUT_PLL:
-            // INPUT_PLL：等待输入 PLL 锁定；Unit1 分流模式等待活母线，Unit2 稳压
-            // 模式先执行 5 V 软启动，单机电压模式直接进入电压爬升。
+            // INPUT_PLL：Unit2 Model2 锁定输入 PLL 后先建立 5 V 并联平台。
             if (pll_ui.locked != 0U)
             {
                 if (is_share_role() != 0U)
-                {
                     run_state = ST_WAIT_UO;
-                    reset_share_signal_processing();
+                else if (model_active == MODEL_PARALLEL)
+                {
+                    run_state = ST_SS5_RAMP;
                     state_ms = 0UL;
                 }
-#if UNIT_ROLE == UNIT_2
-                else if (model_active == MODEL_PARALLEL)
-                    run_state = ST_SS5_RAMP;
-#endif
                 else
                 {
                     pi_reset(&pi_vd);
@@ -3011,20 +2737,18 @@ void slow_state_machine_1ms(void)
             break;
 
         case ST_OUTPUT_PLL:
-            // OUTPUT_PLL：实测功率级的 Ui/Uo 为同相关系。要求 Uo 在
-            // 4.0~6.5 V、49~51 Hz、锁定且与 Ui 相差不超过10°，
+            // OUTPUT_PLL：要求 Uo 在 4.0~6.5 V、49~51 Hz、锁定且与 Ui 相差约 π，
             // 连续资格通过后才允许并联接入。
             if (meas.uo_rms < 2.5f)
             {
                 run_state = ST_WAIT_UO;
-                reset_share_signal_processing();
                 state_ms = 0UL;
             }
             else if ((meas.uo_rms >= 4.0f) && (meas.uo_rms <= 6.5f) &&
                 (pll_uo.omega >= TWO_PI_F * 49.0f) &&
                 (pll_uo.omega <= TWO_PI_F * 51.0f) &&
                 (pll_uo.locked != 0U) &&
-                (fabsf(wrap_pi(pll_uo.theta - pll_ui.theta)) <
+                (fabsf(wrap_pi(pll_uo.theta - pll_ui.theta - PI_F)) <
                  (10.0f * PI_F / 180.0f)))
             {
                 bus_valid = 1U;
@@ -3036,7 +2760,7 @@ void slow_state_machine_1ms(void)
             else if (state_ms > 1000UL)
             {
                 if ((pll_uo.locked != 0U) &&
-                    (fabsf(wrap_pi(pll_uo.theta - pll_ui.theta)) >=
+                    (fabsf(wrap_pi(pll_uo.theta - pll_ui.theta - PI_F)) >=
                      (10.0f * PI_F / 180.0f)))
                     latch_fault(FAULT_PHASE);
                 else
@@ -3050,7 +2774,7 @@ void slow_state_machine_1ms(void)
             if (voltage_current_limit_1ms() != 0U)
                 u_ref_active = slew(u_ref_active, 0.0f, 0.005f);
             else
-                u_ref_active = slew(u_ref_active, 5.0f, 0.050f);
+                u_ref_active = slew(u_ref_active, 5.0f, 0.025f);
             if ((u_ref_active >= 1.0f) && (gate_state == GATE_BLOCKED))
                 gate_start_pending = 1U;
             if ((u_ref_active >= 4.99f) && (meas.uo_rms >= 4.5f) &&
@@ -3082,21 +2806,31 @@ void slow_state_machine_1ms(void)
             else ss5_stable_ms = 0U;
             if (ss5_stable_ms >= 500U)
             {
-                pi_reset(&pi_vd);
-                pi_reset(&pi_vq);
-                pi_reset(&pi_u_duty);
-                pi_vd.integral = 0.20f;
-                pi_vq.integral = 0.0f;
-                direct_duty_target = PWM_D_MIN;
-                run_state = ST_VOLT_RAMP;
-                state_ms = 0UL;
-                voltage_stable_ms = 0U;
+                target = effective_u_ref();
+                if (target <= 5.01f)
+                {
+                    run_state = ST_RUN;
+                    state_ms = 0UL;
+                    voltage_error_ms = 0U;
+                }
+                else
+                {
+                    pi_reset(&pi_vd);
+                    pi_reset(&pi_vq);
+                    pi_reset(&pi_u_duty);
+                    pi_vd.integral = 0.20f;
+                    pi_vq.integral = 0.0f;
+                    direct_duty_target = PWM_D_MIN;
+                    run_state = ST_VOLT_RAMP;
+                    state_ms = 0UL;
+                    voltage_stable_ms = 0U;
+                }
             }
             else if (state_ms > 1500UL) latch_fault(FAULT_START);
             break;
 
         case ST_VOLT_RAMP:
-            // VOLT_RAMP：从 1 V 起按约 1 s 斜坡到目标值；低端/高端微调也在此阶段生效。
+            // VOLT_RAMP：5 V 平台完成后，用约 1 s 平滑升到最终目标值。
             target = effective_u_ref();
             if (voltage_current_limit_1ms() != 0U)
             {
@@ -3106,14 +2840,9 @@ void slow_state_machine_1ms(void)
             {
                 float ramp_target = ((target < 1.0f) &&
                                      (gate_state == GATE_BLOCKED)) ? 1.0f : target;
-#if UNIT_ROLE == UNIT_2
-                float ramp_span = (model_active == MODEL_PARALLEL) ?
-                                  fmaxf(target - 5.0f, 1.0f) : fmaxf(target, 1.0f);
-#else
-                float ramp_span = fmaxf(target, 1.0f);
-#endif
+                float ramp_span = fmaxf(target - 5.0f, 1.0f);
                 u_ref_active = slew(u_ref_active, ramp_target,
-                                      ramp_span / 125.0f);
+                                      ramp_span / 1000.0f);
             }
             if ((u_ref_active >= 1.0f) && (gate_state == GATE_BLOCKED))
                 gate_start_pending = 1U;
@@ -3291,22 +3020,22 @@ void keys_update_5ms(void)
             if (k->held_ms < 65000U) k->held_ms += 5U;
             if (k->repeat_ms < 65000U) k->repeat_ms += 5U;
             if ((i == 3U) && (run_state == ST_FAULT) &&
-                (k->held_ms >= 200U) && (k->long_fired == 0U))
+                (k->held_ms >= 400U) && (k->long_fired == 0U))
             {
                 long_event = 1U; k->long_fired = 1U;
             }
             else if ((i == 3U) && (run_state == ST_SAFE) &&
-                     (k->held_ms >= 100U) && (k->long_fired == 0U))
+                     (k->held_ms >= 200U) && (k->long_fired == 0U))
             {
                 long_event = 1U; k->long_fired = 1U;
             }
             if ((i != 0U) && (i != 1U) && (i != 2U) && (i != 3U) &&
-                (k->repeat_ms >= 150U))
+                (k->repeat_ms >= 30U))
             {
                 k->repeat_ms = 0U; k->repeat_edge = 1U;
             }
             if (((i == 0U) || (i == 1U)) &&
-                (model_cmd == MODEL_PARALLEL) && (k->repeat_ms >= 150U))
+                (model_cmd == MODEL_PARALLEL) && (k->repeat_ms >= 30U))
             {
                 k->repeat_ms = 0U; k->repeat_edge = 1U;
             }
@@ -3325,13 +3054,9 @@ void key_action(Uint16 key, Uint16 repeat_event, Uint16 release_event,
 
     if ((key == 3U) && (release_event != 0U) && (run_state == ST_SAFE))
     {
-#if UNIT_ROLE == UNIT_1
         if (model_cmd == MODEL_SAFE) model_cmd = MODEL_VOLTAGE;
         else if (model_cmd == MODEL_VOLTAGE) model_cmd = MODEL_PARALLEL;
         else model_cmd = MODEL_SAFE;
-#else
-        model_cmd = (model_cmd == MODEL_SAFE) ? MODEL_PARALLEL : MODEL_SAFE;
-#endif
         warning_code = FAULT_OK;
         return;
     }

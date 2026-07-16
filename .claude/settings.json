@@ -7,7 +7,9 @@
       "Bash(git remote *)",
       "Bash(grep -n \"^t//\" converter1.c)",
       "Bash(git -C \"d:/CCS/workspace_v12/F280049_ACAC_Unit1\" log --oneline -5)",
-      "Bash(git restore *)"
+      "Bash(git restore *)",
+      "Bash(awk 'BEGIN{prev=0} {if\\($0==\"\" && prev==\"\"\\) print NR\": double blank\"; prev=$0}' converter1.c)",
+      "Bash(git checkout *)"
     ]
   }
 }
