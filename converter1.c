@@ -125,12 +125,12 @@
 #define UI_ADC_GAIN                      36.443f
 #define UO_ADC_OFFSET                    2067.0f
 #define UO_ADC_GAIN                      36.378f
-#define IL_ADC_OFFSET                    2091.9f
-#define IL_ADC_GAIN                      334.04f
+#define IL_ADC_OFFSET                    2077.3f
+#define IL_ADC_GAIN                      164.61f
 #define IO_ADC_OFFSET                    2097.6f
 #define IO_ADC_GAIN                      333.10f
-#define IT_ADC_OFFSET                    2094.0f
-#define IT_ADC_GAIN                      330.25f
+#define IT_ADC_OFFSET                    2081.8f
+#define IT_ADC_GAIN                      162.97f
 // 极性(Polarity)：#1，取决于差分前端接线方向
 #define UI_ADC_POLARITY                  1.0f
 #define UO_ADC_POLARITY                  1.0f
@@ -172,16 +172,16 @@
 
 //********** 电流保护阈值 (A) **********//
 #if POWER_PROFILE == PROFILE_FULL || HALF_CURRENT_STAGE == HALF_IHI
-#define I_BRANCH_CMD_MAX                 3.50f
-#define IO_PK_TRIP                       5.00f
-#define IO_RMS_TRIP                      4.00f
+#define I_BRANCH_CMD_MAX                 2.05f
+#define IO_PK_TRIP                       3.50f
+#define IO_RMS_TRIP                      2.25f
 #define IT_PK_TRIP                       7.00f
 #define IT_RMS_TRIP                      4.50f
-#define IL_REF_PK_MAX                   99.00f
-#define IL_SW_FAST_LIMIT                99.00f
-#define IL_CMPSS_TRIP                   99.00f
-#define IL_RMS_CONT                      5.00f
-#define IL_RMS_TRIP                      5.50f
+#define IL_REF_PK_MAX                    5.80f
+#define IL_SW_FAST_LIMIT                 6.00f
+#define IL_CMPSS_TRIP                    6.50f
+#define IL_RMS_CONT                      4.00f
+#define IL_RMS_TRIP                      4.20f
 #else
 #define I_BRANCH_CMD_MAX                 1.15f
 #define IO_PK_TRIP                       2.00f
@@ -239,8 +239,8 @@
 #define UO_SET_MAX                     35.0f
 #define UO_SET_STEP                     0.5f
 #define DUTY_IO_FF_GAIN                 0.002f
-#define DIAG_DISABLE_IL_SW_TRIP         1U
-#define DIAG_DISABLE_CMPSS_TRIP         1U
+#define DIAG_DISABLE_IL_SW_TRIP         0U
+#define DIAG_DISABLE_CMPSS_TRIP         0U
 
 #define KEY1_IN                         (GpioDataRegs.GPADAT.bit.GPIO27 == 0U)
 #define KEY2_IN                         (GpioDataRegs.GPADAT.bit.GPIO25 == 0U)
@@ -444,6 +444,7 @@ Uint16 il_fast_count = 0U;
 Uint16 io_pk_count = 0U;
 Uint16 it_pk_count = 0U;
 Uint16 uo_pk_count = 0U;
+Uint16 uo_rms_ov_count = 0U;
 volatile float debug_dynamic_ov = 0.0f;
 volatile float debug_u_ref_active = 0.0f;
 Uint16 il_rms_count = 0U;
@@ -753,12 +754,12 @@ Uint16 fault_clear_conditions(void)
                      (meas.raw_uo >= 64U) && (meas.raw_uo <= 4031U) &&
                      (meas.raw_il >= 64U) && (meas.raw_il <= 4031U) &&
                      (meas.raw_io >= 64U) && (meas.raw_io <= 4031U));
+    Uint16 comparator_active;
 #if UNIT_ROLE == UNIT_1
     raw_ok = raw_ok && (meas.raw_it >= 64U) && (meas.raw_it <= 4031U);
 #endif
-    Uint16 comparator_active = CMPSS_getStatus(CMPSS7_BASE) &
-                               (CMPSS_STS_HI_FILTOUT | CMPSS_STS_LO_FILTOUT);
-    if (!raw_ok || !dead_bus() || (comparator_active != 0U) ||
+
+    if (!raw_ok || !dead_bus() ||
         (fabsf(meas.il) > 0.8f * IL_CMPSS_TRIP))
     {
         fault_clear_safe_ms = 0U;
@@ -778,6 +779,21 @@ Uint16 fault_clear_conditions(void)
         fault_clear_safe_ms = 0U; return 0U;
     }
 #endif
+
+    // 只在100 ms资格窗口起点清除旧锁存。窗口建立后只读不清，任何再次
+    // 越流都会留下锁存并把计时归零，下一次安全尝试才重新武装。
+    if (fault_clear_safe_ms == 0U)
+    {
+        CMPSS_clearFilterLatchHigh(CMPSS7_BASE);
+        CMPSS_clearFilterLatchLow(CMPSS7_BASE);
+    }
+    comparator_active = CMPSS_getStatus(CMPSS7_BASE) &
+                        (CMPSS_STS_HI_FILTOUT | CMPSS_STS_LO_FILTOUT);
+    if (comparator_active != 0U)
+    {
+        fault_clear_safe_ms = 0U;
+        return 0U;
+    }
     if (fault_clear_safe_ms < 100U) fault_clear_safe_ms++;
     return (fault_clear_safe_ms >= 100U) ? 1U : 0U;
 }
@@ -1940,9 +1956,9 @@ void signal_processing_slow(void)
 
 void software_protection_fast(void)
 {
-    // 20 kHz 快速路径：仅保留 ADC 越界、CMPSS 硬件标志、iL 单采样峰值。
-    // Io/It/Uo 峰值已删除（分别由 RMS 慢速保护、硬件过流和动态过压覆盖）。
+    // 20 kHz 快速路径：ADC 越界、CMPSS 状态以及 iL/Io/It/Uo 瞬时峰值。
     Uint16 raw_bad;
+    Uint16 protection_active;
 
     raw_bad = ((meas.raw_ui < 32U) || (meas.raw_ui > 4063U) ||
                (meas.raw_uo < 32U) || (meas.raw_uo > 4063U) ||
@@ -1953,9 +1969,7 @@ void software_protection_fast(void)
 #endif
     if (raw_bad != 0U)
     {
-        // TODO: 临时关闭ADC保护
-        // if (++adc_bad_count >= 3U) latch_fault(FAULT_ADC);
-        adc_bad_count = 0U;
+        if (++adc_bad_count >= 3U) latch_fault(FAULT_ADC);
     }
     else adc_bad_count = 0U;
 
@@ -1973,14 +1987,50 @@ void software_protection_fast(void)
     }
 #endif
 
+    protection_active = ((run_state == ST_SS5_RAMP) ||
+                         (run_state == ST_SS5_HOLD) ||
+                         (run_state == ST_VOLT_RAMP) ||
+                         (run_state == ST_SHARE_RAMP) ||
+                         (run_state == ST_RUN) ||
+                         (run_state == ST_STOP_RAMP)) ? 1U : 0U;
+    if (protection_active == 0U)
+    {
+        il_fast_count = 0U;
+        io_pk_count = 0U;
+        it_pk_count = 0U;
+        uo_pk_count = 0U;
+        return;
+    }
+
 #if DIAG_DISABLE_IL_SW_TRIP == 0U
-    // iL 瞬时峰值：只在闸极开启后生效，单采样即锁故障。
-    if ((gate_state == GATE_ACTIVE) && (fabsf(meas.il) >= IL_SW_FAST_LIMIT))
+    // iL 瞬时峰值单采样锁存；其余支路峰值按设计连续确认以抑制毛刺。
+    if (fabsf(meas.il) >= IL_SW_FAST_LIMIT)
     {
         debug_il_fault_source = 4U;
-        latch_fault(FAULT_IL_PK);
+        if (++il_fast_count >= 1U) latch_fault(FAULT_IL_PK);
     }
+    else il_fast_count = 0U;
 #endif
+
+    if (fabsf(meas.io) >= IO_PK_TRIP)
+    {
+        if (++io_pk_count >= 5U) latch_fault(FAULT_IO);
+    }
+    else io_pk_count = 0U;
+
+#if UNIT_ROLE == UNIT_1
+    if (fabsf(meas.it) >= IT_PK_TRIP)
+    {
+        if (++it_pk_count >= 5U) latch_fault(FAULT_IT);
+    }
+    else it_pk_count = 0U;
+#endif
+
+    if (fabsf(meas.uo) >= UO_ABS_PK_TRIP)
+    {
+        if (++uo_pk_count >= 3U) latch_fault(FAULT_UO_OV);
+    }
+    else uo_pk_count = 0U;
 }
 
 void software_protection_slow(void)
@@ -2047,14 +2097,14 @@ void software_protection_slow(void)
     /* 连续超过10 ms才确认 */
     if (meas.uo_rms > dynamic_ov)
     {
-        if (++uo_pk_count >= 10U)
+        if (++uo_rms_ov_count >= 10U)
         {
             latch_fault(FAULT_UO_OV);
         }
     }
     else
     {
-        uo_pk_count = 0U;
+        uo_rms_ov_count = 0U;
     }
 
     if (input_run_ok() == 0U)
@@ -2397,55 +2447,56 @@ void control_update_fast(void)
                                  IL_REF_PK_MAX);
 #if DIRECT_VOLTAGE_DUTY_TEST
 
-    /*
-     * 直接电压控制模式：
-     * 以有限斜率跟踪慢速外环给出的占空比。
-     * 0.0003f/次 @ 20 kHz -> 每毫秒约0.6个百分点。
-     */
-    duty = slew(duty, direct_duty_target, 0.0002f);
-    duty = clampf_local(duty, PWM_D_MIN, PWM_D_MAX);
-
-    /* 电流参考和电流PI退出控制 */
-    il_ref = 0.0f;
-    il_ref_prev = 0.0f;
-    il_ref_target = 0.0f;
-    pi_reset(&pi_id);
-
-#else
-
-    il_ref = slew(il_ref_prev, il_ref_target, 0.125f);
-    il_ref_dot = (il_ref - il_ref_prev) / CONTROL_TS;
-    il_ref_prev = il_ref;
-
-    if (ctrl_active != 0U)
+    if (is_voltage_role() != 0U)
     {
-        error = il_ref - meas.il;
-        v_pi = CURRENT_KP * error + pi_id.integral;
-        denom = fabsf(meas.ui) + fabsf(meas.uo);
-        if (denom < 10.0f) denom = 10.0f;
-        qsign = (half == HALF_POS) ? 1.0f : -1.0f;
-        d_unsat = dff + qsign * (L_HENRY * il_ref_dot + v_pi) / denom;
-        duty = clampf_local(d_unsat, PWM_D_MIN, PWM_D_MAX);
+        /*
+         * 直接电压控制只用于稳压角色调试。Unit1 Model2 是分流角色，
+         * 必须继续执行下方的电流内环，不能被该调试开关旁路。
+         */
+        duty = slew(duty, direct_duty_target, 0.0002f);
+        duty = clampf_local(duty, PWM_D_MIN, PWM_D_MAX);
 
-        if (((d_unsat >= PWM_D_MIN) && (d_unsat <= PWM_D_MAX)) ||
-            ((d_unsat > PWM_D_MAX) && (qsign * error < 0.0f)) ||
-            ((d_unsat < PWM_D_MIN) && (qsign * error > 0.0f)))
-        {
-            pi_id.integral += pi_id.ki * CONTROL_TS * error;
-            pi_id.integral = clampf_local(pi_id.integral, -5.0f, 5.0f);
-        }
-    }
-    else
-    {
-#if GATE_OPEN_LOOP_TEST
-        duty = (run_state == ST_GATE_TEST) ? OPEN_LOOP_DUTY : dff;
-#else
-        duty = dff;
-#endif
+        /* 稳压角色调试时电流参考和电流PI退出控制 */
+        il_ref = 0.0f;
+        il_ref_prev = 0.0f;
+        il_ref_target = 0.0f;
         pi_reset(&pi_id);
     }
-
+    else
 #endif
+    {
+        il_ref = slew(il_ref_prev, il_ref_target, 0.125f);
+        il_ref_dot = (il_ref - il_ref_prev) / CONTROL_TS;
+        il_ref_prev = il_ref;
+
+        if (ctrl_active != 0U)
+        {
+            error = il_ref - meas.il;
+            v_pi = CURRENT_KP * error + pi_id.integral;
+            denom = fabsf(meas.ui) + fabsf(meas.uo);
+            if (denom < 10.0f) denom = 10.0f;
+            qsign = (half == HALF_POS) ? 1.0f : -1.0f;
+            d_unsat = dff + qsign * (L_HENRY * il_ref_dot + v_pi) / denom;
+            duty = clampf_local(d_unsat, PWM_D_MIN, PWM_D_MAX);
+
+            if (((d_unsat >= PWM_D_MIN) && (d_unsat <= PWM_D_MAX)) ||
+                ((d_unsat > PWM_D_MAX) && (qsign * error < 0.0f)) ||
+                ((d_unsat < PWM_D_MIN) && (qsign * error > 0.0f)))
+            {
+                pi_id.integral += pi_id.ki * CONTROL_TS * error;
+                pi_id.integral = clampf_local(pi_id.integral, -5.0f, 5.0f);
+            }
+        }
+        else
+        {
+#if GATE_OPEN_LOOP_TEST
+            duty = (run_state == ST_GATE_TEST) ? OPEN_LOOP_DUTY : dff;
+#else
+            duty = dff;
+#endif
+            pi_reset(&pi_id);
+        }
+    }
 
     // ---- 半周换向：带进入/退出迟滞 + 预测补偿 + 过零电流收缩 ----
     // 进入零区不立即换向，明确离开零区时才切换。
@@ -2609,11 +2660,30 @@ void slow_state_machine_1ms(void)
         return;
     }
 
-    if ((stop_request != 0U) && (run_state != ST_SAFE) &&
-        (run_state != ST_STOP_RAMP) && (run_state != ST_DISCHARGE) &&
-        (run_state != ST_WAIT_MASTER_OFF) && (run_state != ST_GATE_TEST))
+    if ((stop_request != 0U) &&
+        (run_state != ST_SAFE) &&
+        (run_state != ST_FAULT))
     {
-        run_state = ST_STOP_RAMP;
+        stop_request = 0U;
+        start_request = 0U;
+        gate_start_pending = 0U;
+
+        u_ref_active = 0.0f;
+        iconv_ref_held = 0.0f;
+        iconv_ref_target = 0.0f;
+        il_ref = 0.0f;
+        il_ref_prev = 0.0f;
+
+        pi_reset(&pi_id);
+        pi_reset(&pi_vd);
+        pi_reset(&pi_vq);
+        pi_reset(&pi_sd);
+        pi_reset(&pi_sq);
+        pi_reset(&pi_u_duty);
+
+        pwm_force_off();
+
+        run_state = ST_DISCHARGE;
         state_ms = 0UL;
     }
 
