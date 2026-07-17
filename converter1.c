@@ -243,7 +243,7 @@
 #define VOLTAGE_KP                       1.0e-3f
 #define VOLTAGE_KI                       5.0e-2f
 #define SHARE_KP                         0.10f
-#define SHARE_KI                         1.0f
+#define SHARE_KI                         3.0f
 #define DIRECT_VOLTAGE_DUTY_TEST         1U
 #define UO_SET_MIN                      1.0f
 #define UO_SET_MAX                     35.0f
@@ -487,6 +487,7 @@ Uint16 trip_clear_safe_count = 0U;
 Uint16 open_loop_test_ms = 0U;
 float ui_alpha_prev = 0.0f;
 volatile Uint32 debug_half_change_count = 0UL;
+volatile Uint16 carrier_rephase_done = 0U;
 typedef enum
 {
     ZC_REGION_POS = 1,
@@ -565,6 +566,7 @@ void pwm_force_pair(volatile struct EPWM_REGS *pwm, Uint16 a_force,
                            Uint16 b_force);
 void gate_sequence_update(void);
 void request_half_change(HalfPolarity next_half);
+void carrier_rephase_at_zc(void);
 void sample_and_calibrate(void);
 void signal_processing_fast(void);
 void signal_processing_it_dq_publish_slow(void);
@@ -1988,6 +1990,13 @@ void request_half_change(HalfPolarity desired_half)
         gate_state = GATE_ZC_A;
         zc_stage_periods = 1U;     // 防止同一次 ISR 立即推进到 ZC_B
         pwm_set_zc_a(desired_half);
+
+        if (carrier_rephase_done == 0U)
+        {
+            carrier_rephase_at_zc();
+            carrier_rephase_done = 1U;
+        }
+
         debug_zc_a_count++;
     }
 }
@@ -2020,6 +2029,32 @@ void gate_sequence_update(void)
     else if (gate_state == GATE_ACTIVE)
     {
         pwm_set_normal(half, duty);
+        carrier_rephase_done = 0U;
+    }
+}
+
+void carrier_rephase_at_zc(void)
+{
+    /*
+     * 只能在门极封锁或过零换向阶段执行。
+     * 禁止在GATE_ACTIVE状态下直接改TBCTR，
+     * 否则可能产生窄脉冲。
+     */
+    if ((gate_state == GATE_BLOCKED) ||
+        (gate_state == GATE_ZC_A) ||
+        (gate_state == GATE_ZC_B))
+    {
+        EALLOW;
+
+        /*
+         * ePWM1是本机主载波。
+         * ePWM2、ePWM3同时归零，避免本机模块之间短暂错位。
+         */
+        EPwm1Regs.TBCTR = 0U;
+        EPwm2Regs.TBCTR = 0U;
+        EPwm3Regs.TBCTR = 0U;
+
+        EDIS;
     }
 }
 
