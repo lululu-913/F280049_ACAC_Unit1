@@ -118,7 +118,7 @@
 #define CO_FARAD                        21.0e-6f
 #define IO_FF_A                         0.881911f
 #define FUND_LPF_A                      0.993737f
-#define IL_TO_OUTPUT_SIGN              (-1.0f)
+#define IL_TO_OUTPUT_SIGN              (1.0f)
 
 //********** ADC 标定参数 (physical = (raw - offset) / gain) **********//
 #define UI_ADC_OFFSET                    2066.2f
@@ -238,8 +238,8 @@
 #define CURRENT_KI                       160.0f
 #define VOLTAGE_KP                       1.0e-3f
 #define VOLTAGE_KI                       5.0e-2f
-#define SHARE_KP                         1.00f
-#define SHARE_KI                         157.0f
+#define SHARE_KP                         0.70f
+#define SHARE_KI                         30.0f
 #define DIRECT_VOLTAGE_DUTY_TEST         1U
 #define UO_SET_MIN                      1.0f
 #define UO_SET_MAX                     35.0f
@@ -1969,7 +1969,6 @@ void request_half_change(HalfPolarity desired_half)
         gate_state = GATE_ZC_A;
         zc_stage_periods = 1U;     // 防止同一次 ISR 立即推进到 ZC_B
         pwm_set_zc_a(desired_half);
-        pi_reset(&pi_id);
         debug_zc_a_count++;
     }
 }
@@ -2650,7 +2649,7 @@ void control_update_fast(void)
      * 避免每1 ms出现一次明显阶跃。
      */
     dff_held = slew(dff_held, dff_target, 0.0030f);
-    iconv_ref_held = slew(iconv_ref_held, iconv_ref_target, 0.006f);
+    iconv_ref_held = slew(iconv_ref_held, iconv_ref_target, 0.050f);
 
     float il_ref_target;
     float il_ref_dot;
@@ -2729,7 +2728,11 @@ void control_update_fast(void)
 #else
             duty = dff;
 #endif
-            pi_reset(&pi_id);
+            // ZC_A/ZC_B期间功率开关由换向序列接管，只冻结积分；真正
+            // 关闸或退出控制时才清零，避免每半周丢失稳态电流补偿。
+            if ((gate_state != GATE_ZC_A) &&
+                (gate_state != GATE_ZC_B))
+                pi_reset(&pi_id);
         }
     }
 

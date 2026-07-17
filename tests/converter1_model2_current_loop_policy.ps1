@@ -19,6 +19,7 @@ if ($fast -notmatch '#if DIRECT_VOLTAGE_DUTY_TEST\s+if \(is_voltage_role\(\) != 
 }
 
 foreach ($token in @(
+    'iconv_ref_held = slew(iconv_ref_held, iconv_ref_target, 0.050f);',
     'il_ref_target = IL_TO_OUTPUT_SIGN * iconv_ref / div;',
     'il_ref = slew(il_ref_prev, il_ref_target, 0.125f);',
     'error = il_ref - meas.il;',
@@ -29,6 +30,26 @@ foreach ($token in @(
 )) {
     if (-not $fast.Contains($token)) {
         throw "Model2 current-loop policy missing: $token"
+    }
+}
+
+$halfChange = [regex]::Match(
+    $source,
+    '(?s)void request_half_change\(HalfPolarity desired_half\)\s*\{(.*?)\n\}')
+if (-not $halfChange.Success) {
+    throw 'Model2 current-loop policy: request_half_change body not found'
+}
+if ($halfChange.Groups[1].Value.Contains('pi_reset(&pi_id);')) {
+    throw 'Model2 current-loop policy: zero-crossing must freeze, not reset, current PI integral'
+}
+
+foreach ($token in @(
+    'if ((gate_state != GATE_ZC_A) &&',
+    '(gate_state != GATE_ZC_B))',
+    'pi_reset(&pi_id);'
+)) {
+    if (-not $fast.Contains($token)) {
+        throw "Model2 current-loop policy missing inactive-state reset guard: $token"
     }
 }
 
