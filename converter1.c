@@ -152,11 +152,11 @@
 #define UI_RUN_MIN                       32.0f
 #define UI_RUN_MAX                       39.0f
 
-// 输出 1~35 V，当前并机调试默认 12 V
+// 输出 1~35 V，并机额定目标 30 V
 #define UO_SINGLE_MIN                    1.0f
 #define UO_SINGLE_MAX                   35.0f
 #define UO_PARALLEL_MAX                 35.0f
-#define UO_DEFAULT                      12.0f
+#define UO_DEFAULT                      30.0f
 
 // 输出过压保护
 #define UO_RMS_HARD_MAX                  36.5f
@@ -170,7 +170,7 @@
 #define UI_RUN_MAX                       38.0f
 #define UO_SINGLE_MAX                    35.0f
 #define UO_PARALLEL_MAX                  30.0f
-#define UO_DEFAULT                       12.0f
+#define UO_DEFAULT                       30.0f
 #define UO_RMS_HARD_MAX                  37.0f
 #define UO_ABS_PK_TRIP                   53.0f
 #define UOV_MARGIN                       2.0f
@@ -2265,6 +2265,9 @@ void software_protection_slow(void)
     {
         dynamic_ov = 7.0f;
     }
+
+    // 状态机只可抬高动态资格线，最终保护门限绝不能超过RMS硬上限。
+    dynamic_ov = fminf(dynamic_ov, UO_RMS_HARD_MAX);
 
     debug_dynamic_ov = dynamic_ov;
     debug_u_ref_active = u_ref_active;

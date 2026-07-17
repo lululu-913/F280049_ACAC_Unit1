@@ -35,8 +35,8 @@ if ($outputPll -match 'latch_fault\(FAULT_START\)|latch_fault\(FAULT_PHASE\)') {
     throw 'In-phase policy: blocked OPLL waiting must not latch F10 or F13'
 }
 
-if ($source -notmatch '#define IL_TO_OUTPUT_SIGN\s+\(-1\.0f\)') {
-    throw 'In-phase policy: retain the loaded-hardware current direction that avoids F01 cross-current'
+if ($source -notmatch '#define IL_TO_OUTPUT_SIGN\s+\(1\.0f\)') {
+    throw 'In-phase policy: retain the hardware-validated positive current direction'
 }
 
 'converter1 in-phase contract policy: PASS'

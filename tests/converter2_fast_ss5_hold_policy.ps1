@@ -30,8 +30,8 @@ if (-not $ss5.Groups[1].Value.Contains(
 }
 
 foreach ($required in @(
-    'if (ss5_stable_ms < 50U) ss5_stable_ms++;',
-    'if (ss5_stable_ms >= 50U)'
+    'if (ss5_stable_ms < 300U) ss5_stable_ms++;',
+    'if (ss5_stable_ms >= 300U)'
 )) {
     if (-not $hold.Groups[1].Value.Contains($required)) {
         throw "Unit2 fast SS5/HOLD policy missing: $required"
@@ -49,8 +49,8 @@ foreach ($obsolete in @(
     }
 }
 
-if (-not $stateSource.Contains('ramp_span / 333.333f')) {
-    throw 'Unit2 fast SS5/HOLD policy: 5 V to target ramp is not approximately 333 ms'
+if (-not $stateSource.Contains('ramp_span / 500.0f')) {
+    throw 'Unit2 fast SS5/HOLD policy: 5 V to target ramp is not approximately 500 ms'
 }
 
 'converter2 fast SS5/HOLD policy: PASS'

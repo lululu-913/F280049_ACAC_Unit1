@@ -37,10 +37,10 @@ foreach ($required in @(
 
 foreach ($required in @(
     'fabsf(u_ref_active - target) < 0.05f',
-    'fabsf(meas.uo_rms - target) <= 2.0f',
+    'fabsf(meas.uo_rms - target) <= 3.0f',
     'current_limit_active == 0U',
-    'if (voltage_stable_ms < 50U) voltage_stable_ms++;',
-    'if (voltage_stable_ms >= 50U)'
+    'if (voltage_stable_ms < 100U) voltage_stable_ms++;',
+    'if (voltage_stable_ms >= 100U)'
 )) {
     if (-not $ramp.Groups[1].Value.Contains($required)) {
         throw "Unit2 relaxed voltage ramp policy missing ramp rule: $required"
