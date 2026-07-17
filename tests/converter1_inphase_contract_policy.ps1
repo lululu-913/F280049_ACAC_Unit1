@@ -19,20 +19,24 @@ if ([string]::IsNullOrWhiteSpace($outputPll)) {
 
 if ([regex]::Matches(
         $outputPll,
-        'fabsf\(wrap_pi\(pll_uo\.theta - pll_ui\.theta\)\)').Count -ne 2) {
-    throw 'In-phase policy: qualification and F13 must both use theta_o-theta_i'
+        'fabsf\(wrap_pi\(pll_uo\.theta - pll_ui\.theta\)\)').Count -ne 1) {
+    throw 'In-phase policy: qualification must use theta_o-theta_i exactly once'
 }
 
 if ($outputPll -match 'pll_uo\.theta - pll_ui\.theta - PI_F') {
     throw 'In-phase policy: old 180-degree phase contract remains'
 }
 
-if ($outputPll -notmatch '10\.0f \* PI_F / 180\.0f') {
-    throw 'In-phase policy: the 10-degree safety window changed'
+if ($outputPll -notmatch '20\.0f \* PI_F / 180\.0f') {
+    throw 'In-phase policy: the relaxed 20-degree qualification window is missing'
+}
+
+if ($outputPll -match 'latch_fault\(FAULT_START\)|latch_fault\(FAULT_PHASE\)') {
+    throw 'In-phase policy: blocked OPLL waiting must not latch F10 or F13'
 }
 
 if ($source -notmatch '#define IL_TO_OUTPUT_SIGN\s+\(-1\.0f\)') {
-    throw 'In-phase policy: current-loop sign changed before loaded-direction validation'
+    throw 'In-phase policy: retain the loaded-hardware current direction that avoids F01 cross-current'
 }
 
 'converter1 in-phase contract policy: PASS'

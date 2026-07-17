@@ -152,11 +152,11 @@
 #define UI_RUN_MIN                       32.0f
 #define UI_RUN_MAX                       39.0f
 
-// 输出 1~35 V，默认 30 V
+// 输出 1~35 V，当前并机调试默认 12 V
 #define UO_SINGLE_MIN                    1.0f
 #define UO_SINGLE_MAX                   35.0f
 #define UO_PARALLEL_MAX                 35.0f
-#define UO_DEFAULT                      30.0f
+#define UO_DEFAULT                      12.0f
 
 // 输出过压保护
 #define UO_RMS_HARD_MAX                  36.5f
@@ -170,7 +170,7 @@
 #define UI_RUN_MAX                       38.0f
 #define UO_SINGLE_MAX                    35.0f
 #define UO_PARALLEL_MAX                  30.0f
-#define UO_DEFAULT                       30.0f
+#define UO_DEFAULT                       12.0f
 #define UO_RMS_HARD_MAX                  37.0f
 #define UO_ABS_PK_TRIP                   53.0f
 #define UOV_MARGIN                       2.0f
@@ -234,12 +234,12 @@
 #define PLL_W_MIN                        (TWO_PI_F * 45.0f)
 #define PLL_W_MAX                        (TWO_PI_F * 55.0f)
 #define PLL_SOGI_K                       1.41421356237f
-#define CURRENT_KP                       2.0f
-#define CURRENT_KI                       80.0f
+#define CURRENT_KP                       6.0f
+#define CURRENT_KI                       160.0f
 #define VOLTAGE_KP                       1.0e-3f
 #define VOLTAGE_KI                       5.0e-2f
-#define SHARE_KP                         0.25f
-#define SHARE_KI                         78.5f
+#define SHARE_KP                         1.00f
+#define SHARE_KI                         157.0f
 #define DIRECT_VOLTAGE_DUTY_TEST         1U
 #define UO_SET_MIN                      1.0f
 #define UO_SET_MAX                     35.0f
@@ -472,6 +472,7 @@ Uint16 zc_stage_periods = 0U;
 Uint16 sample_div = 0U;
 Uint16 oled_line = 0U;
 Uint16 ss5_stable_ms = 0U;
+Uint16 output_pll_stable_ms = 0U;
 Uint16 voltage_stable_ms = 0U;
 Uint16 voltage_error_ms = 0U;
 Uint16 current_limit_ms = 0U;
@@ -757,12 +758,26 @@ void oled_update_one_line(void)
     }
     else
     {
-        put_text(line, 0U, "P");
-        put_text(line, 1U, pll_ui.locked ? "Y" : "N");
-        put_text(line, 4U, "Hz");
-        put_fixed(line, 6U, pll_ui.omega / TWO_PI_F, 1U, 5U);
-        put_text(line, 12U, "w");
-        put_u2(line, 13U, (Uint16)((fault_code != FAULT_OK) ? fault_code : warning_code));
+        if (model == MODEL_PARALLEL)
+        {
+            // Model2并机页优先显示实际生效K及按键设定K；PLL资格已由
+            // 状态机和保护持续监控，不再占用OLED第四行。
+            put_text(line, 0U, "K");
+            put_fixed(line, 1U, k_active, 2U, 4U);
+            put_text(line, 6U, "c");
+            put_fixed(line, 7U, k_cmd, 2U, 4U);
+            put_text(line, 12U, "w");
+            put_u2(line, 13U, (Uint16)((fault_code != FAULT_OK) ? fault_code : warning_code));
+        }
+        else
+        {
+            put_text(line, 0U, "P");
+            put_text(line, 1U, pll_ui.locked ? "Y" : "N");
+            put_text(line, 4U, "Hz");
+            put_fixed(line, 6U, pll_ui.omega / TWO_PI_F, 1U, 5U);
+            put_text(line, 12U, "w");
+            put_u2(line, 13U, (Uint16)((fault_code != FAULT_OK) ? fault_code : warning_code));
+        }
     }
 
     OLED_ShowString(0U, (Uchar)oled_line, line);
@@ -1740,7 +1755,7 @@ void controllers_init(void)
     pll_uo.amplitude_published = 5.0f;
     pi_id.kp = CURRENT_KP;
     pi_id.ki = CURRENT_LOOP_INTEGRAL_ENABLE ? CURRENT_KI : 0.0f;
-    pi_id.out_min = -5.0f; pi_id.out_max = 5.0f;
+    pi_id.out_min = -7.0f; pi_id.out_max = 7.0f;
     pi_vd.kp = VOLTAGE_KP;
     pi_vd.ki = VOLTAGE_KI;
     pi_vd.integral = 0.0f;
@@ -2929,6 +2944,7 @@ void slow_state_machine_1ms(void)
             share_alpha_ramp = 0.0f;
             bus_valid = 0U;
             ss5_stable_ms = 0U;
+            output_pll_stable_ms = 0U;
             voltage_stable_ms = 0U;
             voltage_error_ms = 0U;
             open_loop_test_ms = 0U;
@@ -3002,47 +3018,49 @@ void slow_state_machine_1ms(void)
             break;
 
         case ST_WAIT_UO:
-            // WAIT_UO：分流机保持关闸，等待主机输出超过 3.5 V 才启动输出 PLL。
-            if (meas.uo_rms > 3.5f)
+            // WAIT_UO：分流机保持关闸，Uo达到1 V即提前启动输出PLL。
+            // 这里只开始观测和锁相；并机接入仍要求4.5~5.5 V平台资格。
+            if (meas.uo_rms >= 1.0f)
             {
+                output_pll_stable_ms = 0U;
                 run_state = ST_OUTPUT_PLL;
                 state_ms = 0UL;
             }
             break;
 
         case ST_OUTPUT_PLL:
-            // OUTPUT_PLL：实测功率级的 Ui/Uo 为同相关系。要求 Uo 在
-            // 4.0~6.5 V、49~51 Hz、锁定且与 Ui 相差不超过10°，
-            // 连续资格通过后才允许并联接入。
-            if (meas.uo_rms < 2.5f)
+        {
+            // OUTPUT_PLL：保持关闸等待宽松接入资格。电压上限跟随当前目标，
+            // 避免Unit2离开5 V平台后Unit1因固定窗口反复清零或触发F10。
+            float qualify_uo_max = effective_u_ref() + 2.0f;
+
+            if (meas.uo_rms < 0.5f)
             {
+                output_pll_stable_ms = 0U;
                 run_state = ST_WAIT_UO;
                 reset_share_signal_processing();
                 state_ms = 0UL;
             }
-            else if ((meas.uo_rms >= 4.0f) && (meas.uo_rms <= 6.5f) &&
-                (pll_uo.omega >= TWO_PI_F * 49.0f) &&
-                (pll_uo.omega <= TWO_PI_F * 51.0f) &&
+            else if ((meas.uo_rms >= 3.0f) && (meas.uo_rms <= qualify_uo_max) &&
+                (pll_uo.omega >= TWO_PI_F * 48.0f) &&
+                (pll_uo.omega <= TWO_PI_F * 52.0f) &&
                 (pll_uo.locked != 0U) &&
                 (fabsf(wrap_pi(pll_uo.theta - pll_ui.theta)) <
-                 (10.0f * PI_F / 180.0f)))
+                 (20.0f * PI_F / 180.0f)))
             {
-                bus_valid = 1U;
-                share_alpha_ramp = 0.0f;
-                gate_start_pending = 1U;
-                run_state = ST_SHARE_RAMP;
-                state_ms = 0UL;
+                if (output_pll_stable_ms < 50U) output_pll_stable_ms++;
+                if (output_pll_stable_ms >= 50U)
+                {
+                    bus_valid = 1U;
+                    share_alpha_ramp = 0.0f;
+                    gate_start_pending = 1U;
+                    run_state = ST_SHARE_RAMP;
+                    state_ms = 0UL;
+                }
             }
-            else if (state_ms > 1000UL)
-            {
-                if ((pll_uo.locked != 0U) &&
-                    (fabsf(wrap_pi(pll_uo.theta - pll_ui.theta)) >=
-                     (10.0f * PI_F / 180.0f)))
-                    latch_fault(FAULT_PHASE);
-                else
-                    latch_fault(FAULT_START);
-            }
+            else output_pll_stable_ms = 0U;
             break;
+        }
 
         case ST_SS5_RAMP:
             // SS5_RAMP：Unit2 先把参考值从 0 缓慢升到 5 V；达到约 1 V 后才申请开闸，
