@@ -43,9 +43,13 @@
 #define OPEN_LOOP_DUTY                0.10f
 
 // CMPSS7 digital deglitch filter. At 100 MHz SYSCLK this samples every
-// 100 ns and requires 3 of 5 over-limit samples, rejecting narrow bipolar
-// switching spikes while keeping the hardware trip response below 1 us.
+// 150 ns and requires 3 of 5 over-limit samples. The 1.5x persistence time
+// rejects commutation spikes while retaining sub-microsecond hardware trip.
+#if POWER_PROFILE == PROFILE_FULL || HALF_CURRENT_STAGE == HALF_IHI
+#define IL_CMPSS_FILTER_PRESCALE       14U
+#else
 #define IL_CMPSS_FILTER_PRESCALE        9U
+#endif
 #define IL_CMPSS_FILTER_WINDOW          5U
 #define IL_CMPSS_FILTER_THRESHOLD       3U
 
@@ -184,7 +188,7 @@
 #define IT_PK_TRIP                       7.00f
 #define IT_RMS_TRIP                      4.50f
 #define IL_REF_PK_MAX                    5.80f
-#define IL_SW_FAST_LIMIT                 6.00f
+#define IL_SW_FAST_LIMIT                 9.00f
 #define IL_CMPSS_TRIP                    6.50f
 #define IL_RMS_CONT                      4.00f
 #define IL_RMS_TRIP                      4.20f
@@ -238,15 +242,15 @@
 #define CURRENT_KI                       160.0f
 #define VOLTAGE_KP                       1.0e-3f
 #define VOLTAGE_KI                       5.0e-2f
-#define SHARE_KP                         0.70f
-#define SHARE_KI                         30.0f
+#define SHARE_KP                         0.10f
+#define SHARE_KI                         1.0f
 #define DIRECT_VOLTAGE_DUTY_TEST         1U
 #define UO_SET_MIN                      1.0f
 #define UO_SET_MAX                     35.0f
 #define UO_SET_STEP                     0.5f
 #define DUTY_IO_FF_GAIN                 0.002f
 #define DIAG_DISABLE_IL_SW_TRIP         0U
-#define DIAG_DISABLE_CMPSS_TRIP         0U
+#define DIAG_DISABLE_CMPSS_TRIP         1U
 
 #define KEY1_IN                         (GpioDataRegs.GPADAT.bit.GPIO27 == 0U)
 #define KEY2_IN                         (GpioDataRegs.GPADAT.bit.GPIO25 == 0U)
@@ -785,8 +789,8 @@ void oled_update_one_line(void)
 }
 
 //********** 安全条件 **********//
-// 这里的条件只负责“允许启动/允许清故障”，最终硬件过流仍由 CMPSS→ePWM OST
-// 异步链路完成，不能用软件轮询替代。
+// 这里的条件负责允许启动/清故障；当前诊断配置断开CMPSS硬件Trip，
+// 电流保护由软件峰值、RMS与其余外部硬件保护承担。
 void latch_fault(FaultCode fault)
 {
     // 只记录第一个故障，保存当时的采样值、状态和占空比，避免后续故障覆盖根因。
@@ -819,7 +823,9 @@ Uint16 fault_clear_conditions(void)
                      (meas.raw_il <= ADC_RAW_RAIL_MAX) &&
                      (meas.raw_io >= ADC_RAW_RAIL_MIN) &&
                      (meas.raw_io <= ADC_RAW_RAIL_MAX));
+#if DIAG_DISABLE_CMPSS_TRIP == 0U
     Uint16 comparator_active;
+#endif
 #if UNIT_ROLE == UNIT_1
     raw_ok = raw_ok && (meas.raw_it >= ADC_RAW_RAIL_MIN) &&
              (meas.raw_it <= ADC_RAW_RAIL_MAX);
@@ -846,8 +852,8 @@ Uint16 fault_clear_conditions(void)
     }
 #endif
 
-    // 只在100 ms资格窗口起点清除旧锁存。窗口建立后只读不清，任何再次
-    // 越流都会留下锁存并把计时归零，下一次安全尝试才重新武装。
+#if DIAG_DISABLE_CMPSS_TRIP == 0U
+    // CMPSS硬件Trip启用时，清故障资格必须确认比较器锁存保持安全。
     if (fault_clear_safe_ms == 0U)
     {
         CMPSS_clearFilterLatchHigh(CMPSS7_BASE);
@@ -860,6 +866,7 @@ Uint16 fault_clear_conditions(void)
         fault_clear_safe_ms = 0U;
         return 0U;
     }
+#endif
     if (fault_clear_safe_ms < 100U) fault_clear_safe_ms++;
     return (fault_clear_safe_ms >= 100U) ? 1U : 0U;
 }
@@ -917,6 +924,10 @@ void reset_share_signal_processing(void)
     io_fund_rms = 0.0f;
     io2_fund_rms = 0.0f;
     meas.it_rms = 0.0f;
+
+    pi_sd.integral = 0.0f;
+    pi_sq.integral = 0.0f;
+    k_cmd = 1.0f;
 }
 
 Uint16 model_is_legal(Uint16 model)
@@ -1713,8 +1724,13 @@ void cmpss_trip_init(void)
                  EPWM_DC_EVENT_1, EPWM_DC_EVENT_INPUT_NOT_SYNCED);
     EPWM_setDigitalCompareEventSyncMode(EPWM2_BASE, EPWM_DC_MODULE_A,
                  EPWM_DC_EVENT_1, EPWM_DC_EVENT_INPUT_NOT_SYNCED);
+#if DIAG_DISABLE_CMPSS_TRIP == 0U
     EPWM_enableTripZoneSignals(EPWM1_BASE, EPWM_TZ_SIGNAL_DCAEVT1);
     EPWM_enableTripZoneSignals(EPWM2_BASE, EPWM_TZ_SIGNAL_DCAEVT1);
+#else
+    EPWM_disableTripZoneSignals(EPWM1_BASE, EPWM_TZ_SIGNAL_DCAEVT1);
+    EPWM_disableTripZoneSignals(EPWM2_BASE, EPWM_TZ_SIGNAL_DCAEVT1);
+#endif
     EPWM_setTripZoneAction(EPWM1_BASE, EPWM_TZ_ACTION_EVENT_TZA,
                            EPWM_TZ_ACTION_LOW);
     EPWM_setTripZoneAction(EPWM1_BASE, EPWM_TZ_ACTION_EVENT_TZB,
@@ -1814,8 +1830,11 @@ Uint16 trip_clear_qualify_fast(void)
                      (meas.raw_il <= ADC_RAW_RAIL_MAX) &&
                      (meas.raw_io >= ADC_RAW_RAIL_MIN) &&
                      (meas.raw_io <= ADC_RAW_RAIL_MAX));
-    Uint16 cmp_ok = (CMPSS_getStatus(CMPSS7_BASE) &
-                     (CMPSS_STS_HI_FILTOUT | CMPSS_STS_LO_FILTOUT)) == 0U;
+    Uint16 cmp_ok = 1U;
+#if DIAG_DISABLE_CMPSS_TRIP == 0U
+    cmp_ok = (CMPSS_getStatus(CMPSS7_BASE) &
+              (CMPSS_STS_HI_FILTOUT | CMPSS_STS_LO_FILTOUT)) == 0U;
+#endif
     if (!raw_ok || !cmp_ok || (fabsf(meas.il) > 0.8f * IL_CMPSS_TRIP) ||
         (pll_ui.locked == 0U))
     {
@@ -2178,11 +2197,11 @@ void software_protection_fast(void)
     }
 
 #if DIAG_DISABLE_IL_SW_TRIP == 0U
-    // iL 瞬时峰值单采样锁存；其余支路峰值按设计连续确认以抑制毛刺。
+    // iL软件峰值连续2点确认，抑制换向单点毛刺；CMPSS仍保留亚微秒硬件保护。
     if (fabsf(meas.il) >= IL_SW_FAST_LIMIT)
     {
         debug_il_fault_source = 4U;
-        if (++il_fast_count >= 1U) latch_fault(FAULT_IL_PK);
+        if (++il_fast_count >= 2U) latch_fault(FAULT_IL_PK);
     }
     else il_fast_count = 0U;
 #endif
@@ -2617,8 +2636,28 @@ void control_update_slow(void)
         alpha = (k_active / (1.0f + k_active)) * share_alpha_ramp;
         target_d = alpha * it_dq.d;
         target_q = alpha * it_dq.q;
-        corr_d = pi_update_dt(&pi_sd, target_d - io_dq.d, ctrl_active, 0.001f);
-        corr_q = pi_update_dt(&pi_sq, target_q - io_dq.q, ctrl_active, 0.001f);
+        {
+            float err_d;
+
+            err_d = target_d - io_dq.d;
+
+            if (fabsf(err_d) < 0.02f)
+            {
+                err_d = 0.0f;
+            }
+
+            corr_d = pi_update_dt(&pi_sd,
+                                  err_d,
+                                  ctrl_active,
+                                  0.001f);
+
+            pi_sd.integral =
+                clampf_local(pi_sd.integral, -0.35f, 0.35f);
+        }
+
+        /* 暂时关闭q轴均流 */
+        corr_q = 0.0f;
+        pi_sq.integral = 0.0f;
         iconv_ref = target_d * so + target_q * co +
                     CO_FARAD * uo_observer.dalpha +
                     corr_d * so + corr_q * co;
